@@ -105,6 +105,8 @@ class Director:
     PLACE_Z = 0.03
     HOME_TIP = (0.45, 0.25)
     REACH = 0.52  # base centre -> grasped corner; keeps the arm stretched out
+    PEAK_REACH = 0.40  # reach at the top of a fold arc (arm tucked in to lift higher)
+    MAX_LIFT = 0.45  # highest fingertip height used while folding
     # Base motion
     V_MAX = 0.25
     W_MAX = 1.0
@@ -556,27 +558,37 @@ class Director:
         rs.status = "idle"
 
     def carry(self, plan: list[FoldAssignment]) -> Task:
-        """Both robots drive in lock-step, lifting the edge in an arc over the towel."""
+        """Both robots drive in lock-step, lifting the edge in an arc over the cloth.
+
+        A clean fold of length L wants the edge lifted about L/2. With the arm
+        stretched out the tip only reaches ~30 cm, so near the top of the arc
+        the arm pulls in (shorter reach -> more height) while the base drives
+        the same distance toward the cloth: the fingertip stays on its line.
+        """
         starts = [self.pose(a.robot).xy.copy() for a in plan]
         deltas = [a.place - a.grab for a in plan]
         lengths = [float(np.linalg.norm(d)) for d in deltas]
         T = max(4.0, max(lengths) / 0.08)
-        peaks = [min(0.30, 0.4 * ln + self.HOLD_Z) for ln in lengths]
+        peaks = [min(self.MAX_LIFT, 0.45 * ln + 0.05) for ln in lengths]
         reach = [a.robot.tip[0] for a in plan]
+        tuck = [max(0.0, r - self.PEAK_REACH) for r in reach]  # how far the arm pulls in at the top
         for a in plan:
             a.robot.status = "folding"
         n = int(T / CTRL_DT)
         for k in range(1, n + 1):
             s, ds = min_jerk(k / n)
-            for a, p0, d, r, peak in zip(plan, starts, deltas, reach, peaks):
+            arc, darc = math.sin(math.pi * s), math.pi * math.cos(math.pi * s) * ds / T
+            for a, p0, d, r, peak, tk in zip(plan, starts, deltas, reach, peaks, tuck):
                 rs = a.robot
                 if self.tracker.age(rs.id, self.t) > self.STALE_LIMIT:
                     self.stop(rs)
                     continue
                 p = self.pose(rs)
-                v = d * ds / T + (p0 + s * d - p.xy) * self.KP_POS
+                facing = np.array([math.cos(a.facing), math.sin(a.facing)])
+                target = p0 + s * d + facing * tk * arc  # lean in as the arm pulls in
+                v = d * ds / T + facing * tk * darc + (target - p.xy) * self.KP_POS
                 self._send_world_velocity(rs, v, float(np.clip(self.KP_YAW * wrap(a.facing - p.yaw), -self.W_MAX, self.W_MAX)))
-                self.set_tip(rs, r, self.HOLD_Z + (peak - self.HOLD_Z) * math.sin(math.pi * s))
+                self.set_tip(rs, r - tk * arc, self.HOLD_Z + (peak - self.HOLD_Z) * arc)
             yield
         for a in plan:
             self.stop(a.robot)

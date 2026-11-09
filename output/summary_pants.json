@@ -1,0 +1,46 @@
+{
+  "garment": "pants",
+  "seed": 0,
+  "success": true,
+  "error": null,
+  "sim_seconds": 76.6,
+  "wall_seconds": 804.5,
+  "footprint_m2": {
+    "before": 0.4847,
+    "after": 0.1577
+  },
+  "footprint_ratio": 0.325,
+  "ideal_ratio": null,
+  "final_size_m": [
+    0.477,
+    0.419
+  ],
+  "max_cloth_height_m": 0.086,
+  "camera_reprojection_error_px": 0.16982426967685227,
+  "tracking_error_mm": {
+    "mean": 0.81,
+    "max": 2.46
+  },
+  "heading_error_deg": {
+    "mean": 0.37,
+    "max": 1.16
+  },
+  "events": [
+    "   0.1s camera calibrated from floor markers (reprojection error 0.17 px)",
+    "   0.1s all robots located: r0 at [-1.05 -0.8 ], r1 at [ 1.03 -0.8 ]",
+    "   0.2s cloth seen: 1.00 x 0.54 m, area 0.427 m^2",
+    "   0.2s pants found: waist points [ 0.25 -0.97], 1.00 m long, 0.54 m wide",
+    "   0.2s r1: grab [ 0.329 -0.456] -> place at [-0.052 -0.557]",
+    "   0.2s r0: grab [0.148 0.524] -> place at [-0.376  0.386]",
+    "  25.6s fold 1/3 leg over leg done",
+    "  25.7s cloth seen: 1.00 x 0.23 m, area 0.200 m^2",
+    "  25.7s r1: grab [-0.177  0.423] -> place at [ 0.072 -0.521]",
+    "  25.7s r0: grab [-0.368  0.378] -> place at [-0.118 -0.576]",
+    "  55.1s fold 2/3 hems to waist done",
+    "  55.2s cloth seen: 0.82 x 0.33 m, area 0.160 m^2",
+    "  55.2s r1: grab [-0.151  0.125] -> place at [ 0.012 -0.493]",
+    "  55.2s r0: grab [-0.355  0.112] -> place at [-0.173 -0.583]",
+    "  76.5s fold 3/3 in half again done",
+    "  76.6s cloth seen: 0.48 x 0.42 m, area 0.148 m^2"
+  ]
+}
