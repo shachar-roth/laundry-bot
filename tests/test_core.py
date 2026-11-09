@@ -28,7 +28,7 @@ def test_ik_unreachable():
 @pytest.fixture(scope="module")
 def sim():
     spec = SceneSpec(
-        towel=TowelSpec(centre=(0.05, -0.03), yaw=0.3, self_collision=False),
+        garment=TowelSpec(centre=(0.05, -0.03), yaw=0.3, self_collision=False),
         robots=[RobotSpec("r0", 10, -0.9, -0.75, math.pi / 2), RobotSpec("r1", 11, 0.9, -0.6, 2.0)],
     )
     world = SimWorld(spec)
@@ -70,3 +70,36 @@ def test_gripper_pinches_only_nearby_cloth(sim):
     r.set_gripper(True)  # tip is far from the towel
     assert not r.holding()
     r.set_gripper(False)
+
+
+@pytest.mark.parametrize("yaw", [0.0, 1.2, -2.6])
+def test_shirt_orientation_and_keypoints(yaw):
+    from laundrybot.perception import shirt_frame, shirt_keypoints
+    from laundrybot.sim.garments import ShirtSpec, tshirt_outline
+
+    centre = np.array([0.05, -0.02])
+    spec = SceneSpec(
+        garment=ShirtSpec(centre=tuple(centre), yaw=yaw, self_collision=False),
+        robots=[RobotSpec("r0", 10, -0.95, -0.8, math.pi / 2), RobotSpec("r1", 11, 0.95, -0.8, math.pi / 2)],
+    )
+    world = SimWorld(spec)
+    world.step(0.2)
+    cam = SimCamera(world)
+    img = cam.capture()
+    cam.renderer.close()
+    model = CameraModel(cam.K)
+    model.calibrate(detect_markers(img), spec.floor_markers)
+    frame = shirt_frame(ClothDetector().detect(img, model))
+    collar_dir = np.array([-math.sin(yaw), math.cos(yaw)])
+    assert frame.e_v @ collar_dir > math.cos(math.radians(3))
+    k = shirt_keypoints(ClothDetector().detect(img, model).outline, frame)
+    R = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    o = tshirt_outline()
+    expected = {
+        "sleeve_left": o[np.argmin(o[:, 0])],
+        "sleeve_right": o[np.argmax(o[:, 0])],
+        "hem_left": (-0.25, -0.35),
+        "hem_right": (0.25, -0.35),
+    }
+    for name, local in expected.items():
+        assert np.linalg.norm(getattr(k, name) - (R @ np.asarray(local) + centre)) < 0.025, name

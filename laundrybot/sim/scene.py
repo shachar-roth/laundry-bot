@@ -14,23 +14,7 @@ import numpy as np
 
 from ..geometry import RobotGeometry
 from ..perception import ARUCO_DICT
-
-
-@dataclass
-class TowelSpec:
-    count_x: int = 11  # vertices along x (towel 0.5 m wide)
-    count_y: int = 15  # vertices along y (towel 0.7 m long)
-    spacing: float = 0.05
-    centre: tuple[float, float] = (0.0, 0.0)
-    yaw: float = 0.0
-    mass: float = 0.15
-    rgba: tuple = (0.15, 0.35, 0.85, 1.0)
-    # Layers rest on each other instead of passing through. ~5x slower physics.
-    self_collision: bool = True
-
-    @property
-    def n_vertices(self) -> int:
-        return self.count_x * self.count_y
+from .garments import ShirtSpec, TowelSpec  # noqa: F401  (re-exported)
 
 
 @dataclass
@@ -45,7 +29,7 @@ class RobotSpec:
 
 @dataclass
 class SceneSpec:
-    towel: TowelSpec = field(default_factory=TowelSpec)
+    garment: TowelSpec | ShirtSpec = field(default_factory=TowelSpec)
     robots: list[RobotSpec] = field(default_factory=list)
     geometry: RobotGeometry = field(default_factory=RobotGeometry)
     # Floor markers {id: (x, y, size)} - their positions are "measured" once at install time
@@ -132,7 +116,7 @@ def _robot_xml(r: RobotSpec, g: RobotGeometry) -> str:
 
 
 def build_scene_xml(spec: SceneSpec) -> str:
-    t, g = spec.towel, spec.geometry
+    t, g = spec.garment, spec.geometry
     W, H = spec.camera_res
     floor_markers = "\n".join(
         _marker_geoms(mid, size, x, y, 0.0012, f"floor_marker{mid}") for mid, (x, y, size) in spec.floor_markers.items()
@@ -143,7 +127,7 @@ def build_scene_xml(spec: SceneSpec) -> str:
     # Closing the gripper switches on the constraints for vertices within the
     # gripper's pinch zone. See SimRobot.set_gripper.
     eqs = "\n".join(
-        f'<connect name="{r.name}_grip{i}" body1="towel_{i}" body2="{r.name}_tip" anchor="0 0 0" active="false" solref="0.01 1"/>'
+        f'<connect name="{r.name}_grip{i}" body1="cloth_{i}" body2="{r.name}_tip" anchor="0 0 0" active="false" solref="0.01 1"/>'
         for r in spec.robots
         for i in range(t.n_vertices)
     )
@@ -176,12 +160,7 @@ def build_scene_xml(spec: SceneSpec) -> str:
     {floor_markers}
     <camera name="overhead" pos="0 0 {spec.camera_height}" fovy="{spec.camera_fovy_deg}"/>
     <camera name="view" pos="0 -2.9 2.1" xyaxes="1 0 0 0 0.6 0.8" fovy="50"/>
-    <flexcomp name="towel" type="grid" count="{t.count_x} {t.count_y} 1" spacing="{t.spacing} {t.spacing} {t.spacing}"
-              pos="{t.centre[0]:.4f} {t.centre[1]:.4f} 0.006" euler="0 0 {t.yaw:.5f}" radius="0.004" dim="2"
-              mass="{t.mass}" material="cloth">
-      <contact condim="3" solref="0.01 1" selfcollide="{'auto' if t.self_collision else 'none'}" contype="1" conaffinity="3" friction="0.8"/>
-      <edge equality="true" damping="0.002"/>
-    </flexcomp>
+    {t.flexcomp_xml()}
     {robots}
   </worldbody>
   <equality>

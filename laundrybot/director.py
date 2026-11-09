@@ -14,16 +14,27 @@ motion is closed-loop on the camera's estimate of where the robot really is.
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 from dataclasses import dataclass
 from typing import Callable, Generator, Iterable
 
+import cv2
 import numpy as np
 
 from .geometry import RobotGeometry
 from .interfaces import RobotDriver
 from .kinematics import arm_ik
-from .perception import CameraModel, ClothDetector, ClothObservation, Pose2D, RobotTracker, detect_markers
+from .perception import (
+    CameraModel,
+    ClothDetector,
+    ClothObservation,
+    Pose2D,
+    RobotTracker,
+    detect_markers,
+    shirt_frame,
+    shirt_keypoints,
+)
 
 Task = Generator[None, None, object]
 
@@ -115,6 +126,9 @@ class Director:
         self.cloth_detector = ClothDetector()
         self.cloth: ClothObservation | None = None
         self.first_cloth: ClothObservation | None = None
+        self.shirt = None  # (ShirtFrame, centre-line h, fold offset L) once a shirt is seen
+        self.fold_line: tuple[np.ndarray, np.ndarray] | None = None  # for drawing
+        self.keypoints: dict[str, np.ndarray] = {}
         self.image: np.ndarray | None = None
         self.detections: dict[int, np.ndarray] = {}
         self.t = 0.0
@@ -298,45 +312,114 @@ class Director:
                 self.cloth = obs
                 self.first_cloth = self.first_cloth or obs
                 self.log(
-                    f"towel seen: {2*obs.half_long:.2f} x {2*obs.half_short:.2f} m, area {obs.area:.3f} m^2"
+                    f"cloth seen: {2*obs.half_long:.2f} x {2*obs.half_short:.2f} m, area {obs.area:.3f} m^2"
                 )
                 return obs
         raise FoldFailed("no towel in view")
 
-    def plan_half_fold(self, cloth: ClothObservation) -> list[FoldAssignment]:
-        """Fold the towel in half across its long side.
+    # ------------------------------------------------------------ fold plans
+    # A planner looks at the cloth and returns (grab points, place points).
+    # Every fold in this project is "pick these points up, put them there".
 
-        Two robots stand on either long side, each grabs one corner of a short
-        edge, and both carry that edge over to the opposite short edge. We fold
-        toward the middle of the workspace so the result stays in camera view.
+    def plan_half_fold(self, cloth: ClothObservation) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Fold a roughly rectangular item in half across its long side.
+
+        Grab the two corners of one short edge and lay them on the opposite
+        short edge. Fold toward the middle of the workspace so the result
+        stays in camera view.
         """
         c, u, v = cloth.centre, cloth.u, cloth.v
         proj_u = (cloth.corners - c) @ u
         ends = {+1: cloth.corners[proj_u > 0], -1: cloth.corners[proj_u <= 0]}
         if any(len(e) != 2 for e in ends.values()):
-            raise FoldFailed("could not find the towel's two short edges")
-        # place-end = the end closer to the workspace centre (0, 0)
+            raise FoldFailed("could not find the item's two short edges")
         place_sign = min((+1, -1), key=lambda s: np.linalg.norm(ends[s].mean(axis=0)))
-        grab_pts, place_pts = ends[-place_sign], ends[place_sign]
+        grabs = list(ends[-place_sign])
+        places = [ends[place_sign][np.argmin([abs((p - gp) @ v) for p in ends[place_sign]])] for gp in grabs]
+        mid = (ends[-place_sign].mean(axis=0) + ends[place_sign].mean(axis=0)) / 2
+        self.fold_line = (mid - v * (cloth.half_short + 0.08), mid + v * (cloth.half_short + 0.08))
+        return grabs, places
 
+    def plan_shirt_side_fold(self, cloth: ClothObservation, side: int) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Fold one side of a T-shirt (body panel + sleeve) in toward the middle.
+
+        The fold line runs hem-to-collar at distance L from the centre line. L
+        is chosen so the mirrored sleeve tip still lands inside the other fold
+        line - then the second side folds cleanly over the first.
+        """
+        if self.shirt is None:
+            frame = shirt_frame(cloth)
+            k = shirt_keypoints(cloth.outline, frame)
+            tips = frame.to_local(np.array([k.sleeve_left, k.sleeve_right]))[:, 0] - k.body_centre_h
+            L = max(0.5 * k.body_half_width, float(np.max(np.abs(tips))) / 3 + 0.01)
+            L = min(L, k.body_half_width - 0.05)
+            self.shirt = (frame, k.body_centre_h, L)
+            hv = frame.to_local(cloth.outline)
+            self.log(
+                f"shirt found: collar points {np.round(frame.e_v, 2)}, body {2*k.body_half_width:.2f} m wide, "
+                f"sleeve span {np.ptp(hv[:, 0]):.2f} m -> fold lines {L:.2f} m either side of centre"
+            )
+        frame, hc, L = self.shirt
+        k = shirt_keypoints(cloth.outline, frame)
+        self.keypoints = {"sleeve L": k.sleeve_left, "sleeve R": k.sleeve_right, "hem L": k.hem_left, "hem R": k.hem_right}
+        h0 = hc + side * L
+        mirror = lambda p: p + 2 * (h0 - frame.to_local(p)[0, 0]) * frame.e_h
+        grabs = [k.sleeve_left, k.hem_left] if side < 0 else [k.sleeve_right, k.hem_right]
+        v = frame.to_local(cloth.outline)[:, 1]
+        self.fold_line = tuple(frame.to_world(np.array([[h0, v.min() - 0.08], [h0, v.max() + 0.08]])))
+        return grabs, [mirror(p) for p in grabs]
+
+    def plan_shirt_half_fold(self, cloth: ClothObservation) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Last shirt fold: hem corners up to the collar, across the half-length line."""
+        frame, hc, L = self.shirt
+        k = shirt_keypoints(cloth.outline, frame)
+        v = frame.to_local(cloth.outline)[:, 1]
+        v0 = (v.min() + v.max()) / 2
+        grabs = [k.hem_left, k.hem_right]
+        self.keypoints = {"hem L": k.hem_left, "hem R": k.hem_right}
+        self.fold_line = tuple(frame.to_world(np.array([[hc - L - 0.08, v0], [hc + L + 0.08, v0]])))
+        return grabs, [p + 2 * (v0 - frame.to_local(p)[0, 1]) * frame.e_v for p in grabs]
+
+    def _clearance(self, pts: np.ndarray) -> float:
+        """Smallest distance from any of pts to the cloth (negative = on top of it)."""
+        poly = self.cloth.outline.astype(np.float32).reshape(-1, 1, 2)
+        return min(-cv2.pointPolygonTest(poly, (float(x), float(y)), True) for x, y in pts)
+
+    def plan_fold(self, grabs: list[np.ndarray], places: list[np.ndarray]) -> list[FoldAssignment]:
+        """Decide where each robot stands and which robot takes which point.
+
+        A robot carries its point by driving sideways relative to its arm, so
+        it faces perpendicular to the carry direction - on whichever side keeps
+        its base off the cloth for the whole carry.
+        """
         legs = []
-        for gp in grab_pts:
-            side = 1.0 if (gp - c) @ v > 0 else -1.0
-            pp = place_pts[np.argmin([abs(((p - c) @ v) - ((gp - c) @ v)) for p in place_pts])]
-            inward = -side * v  # robot looks across the towel
-            facing = math.atan2(inward[1], inward[0])
-            stage_xy = gp - inward * self.REACH
-            legs.append((gp, pp, facing, Pose2D(stage_xy[0], stage_xy[1], facing)))
-
-        # choose which robot takes which side (least total driving)
-        r0, r1 = self.robots[:2]
-        cost = lambda a, b: np.linalg.norm(self.pose(a).xy - legs[0][3].xy) + np.linalg.norm(self.pose(b).xy - legs[1][3].xy)
-        if cost(r1, r0) < cost(r0, r1):
-            r0, r1 = r1, r0
-        return [FoldAssignment(r, *leg) for r, leg in zip((r0, r1), legs)]
+        for gp, pp in zip(grabs, places):
+            d = pp - gp
+            perp = np.array([-d[1], d[0]]) / np.linalg.norm(d)
+            options = []
+            for n in (perp, -perp):
+                path = [gp - n * self.REACH + d * s for s in np.linspace(0, 1, 8)]
+                options.append((self._clearance(np.array(path)), n))
+            clearance, n = max(options, key=lambda o: o[0])
+            if clearance < self.g.footprint_radius:
+                self.log(f"warning: robot will pass within {clearance:.2f} m of the cloth")
+            facing = math.atan2(n[1], n[0])
+            stage = gp - n * self.REACH
+            legs.append((gp, pp, facing, Pose2D(stage[0], stage[1], facing)))
+        robots = self.robots[: len(legs)]
+        best = min(
+            itertools.permutations(robots),
+            key=lambda perm: sum(np.linalg.norm(self.pose(r).xy - leg[3].xy) for r, leg in zip(perm, legs)),
+        )
+        return [FoldAssignment(r, *leg) for r, leg in zip(best, legs)]
 
     # ---------------------------------------------------------- manipulation
-    def pick(self, rs: RobotState, corner: np.ndarray) -> Task:
+    def pick(self, rs: RobotState, corner: np.ndarray, inset: float = 0.015) -> Task:
+        """Grasp near a corner. We aim `inset` metres inside the cloth: aiming at
+        the exact edge risks closing on bare floor."""
+        if self.cloth is not None and inset > 0:
+            inward = self.cloth.centre - corner
+            corner = corner + inward / np.linalg.norm(inward) * inset
         rs.status = "aiming"
         yield from self.face_point(rs, corner)
         r = float(np.linalg.norm(corner - self.pose(rs).xy))
@@ -364,16 +447,16 @@ class Director:
         """Both robots drive in lock-step, lifting the edge in an arc over the towel."""
         starts = [self.pose(a.robot).xy.copy() for a in plan]
         deltas = [a.place - a.grab for a in plan]
-        length = float(np.mean([np.linalg.norm(d) for d in deltas]))
-        T = max(4.0, length / 0.08)
-        peak = min(0.30, 0.4 * length + self.HOLD_Z)
+        lengths = [float(np.linalg.norm(d)) for d in deltas]
+        T = max(4.0, max(lengths) / 0.08)
+        peaks = [min(0.30, 0.4 * ln + self.HOLD_Z) for ln in lengths]
         reach = [a.robot.tip[0] for a in plan]
         for a in plan:
             a.robot.status = "folding"
         n = int(T / CTRL_DT)
         for k in range(1, n + 1):
             s, ds = min_jerk(k / n)
-            for a, p0, d, r in zip(plan, starts, deltas, reach):
+            for a, p0, d, r, peak in zip(plan, starts, deltas, reach, peaks):
                 rs = a.robot
                 if self.tracker.age(rs.id, self.t) > self.STALE_LIMIT:
                     self.stop(rs)
@@ -391,36 +474,53 @@ class Director:
         )
 
     # ------------------------------------------------------------- top level
-    def fold_in_half(self, label: str, attempts: int = 2) -> Task:
+    def execute_fold(self, label: str, planner, attempts: int = 2) -> Task:
         for attempt in range(1, attempts + 1):
             self.phase = f"{label}: looking"
             cloth = yield from self.observe_cloth()
-            plan = self.plan_half_fold(cloth)
+            plan = self.plan_fold(*planner(cloth))
             for a in plan:
-                self.log(f"{a.robot.driver.name}: grab corner {np.round(a.grab, 3)} -> place at {np.round(a.place, 3)}")
+                self.log(f"{a.robot.driver.name}: grab {np.round(a.grab, 3)} -> place at {np.round(a.place, 3)}")
             self.phase = f"{label}: robots to start positions"
             yield from parallel(*(self.drive_to(a.robot, a.stage) for a in plan))
             self.phase = f"{label}: grasping"
-            ok = yield from parallel(*(self.pick(a.robot, a.grab) for a in plan))
+            ok = yield from parallel(*(self.pick(a.robot, a.grab, inset=0.015 * attempt) for a in plan))
             if all(ok):
                 self.phase = f"{label}: folding"
                 yield from self.carry(plan)
                 self.phase = f"{label}: placing"
                 yield from parallel(*(self.move_arm(a.robot, a.robot.tip[0], self.PLACE_Z, speed=0.1) for a in plan))
                 yield from parallel(*(self.release_and_back_off(a.robot) for a in plan))
+                self.fold_line = None
+                self.keypoints = {}
                 self.log(f"{label} done")
                 return True
             self.log(f"{label}: grasp failed {ok} (attempt {attempt}) - letting go and re-planning")
             yield from parallel(*(self.release_and_back_off(a.robot) for a in plan))
         raise FoldFailed(f"{label} failed after {attempts} attempts")
 
-    def fold_towel(self, folds: int = 2) -> Task:
+    def _start(self) -> Task:
         while not self.cam.calibrated or len(self.tracker.poses) < len(self.robots):
             yield
         self.log("all robots located: " + ", ".join(f"{r.driver.name} at {np.round(self.pose(r).xy, 2)}" for r in self.robots))
-        for i in range(folds):
-            yield from self.fold_in_half(f"fold {i+1}/{folds}")
+
+    def _finish(self) -> Task:
         self.phase = "checking result"
+        self.keypoints = {}
         final = yield from self.observe_cloth()
         self.phase = "done"
         return final
+
+    def fold_towel(self, folds: int = 2) -> Task:
+        yield from self._start()
+        for i in range(folds):
+            yield from self.execute_fold(f"fold {i+1}/{folds}", self.plan_half_fold)
+        return (yield from self._finish())
+
+    def fold_shirt(self) -> Task:
+        """Standard retail fold: left side in, right side in, then in half."""
+        yield from self._start()
+        yield from self.execute_fold("fold 1/3 left side + sleeve", lambda c: self.plan_shirt_side_fold(c, -1))
+        yield from self.execute_fold("fold 2/3 right side + sleeve", lambda c: self.plan_shirt_side_fold(c, +1))
+        yield from self.execute_fold("fold 3/3 hem to collar", self.plan_shirt_half_fold)
+        return (yield from self._finish())

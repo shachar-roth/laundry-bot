@@ -198,9 +198,10 @@ class ClothDetector:
         corners = cam.pixel_to_world(pix_corners, z=cloth_z)[:, :2]
         area = 0.5 * abs(np.dot(outline[:, 0], np.roll(outline[:, 1], 1)) - np.dot(outline[:, 1], np.roll(outline[:, 0], 1)))
 
-        # Rectangle axes in world coordinates (PCA of the four corners' edges)
-        centre = corners.mean(axis=0)
-        e1, e2 = corners[1] - corners[0], corners[2] - corners[1]
+        # Rectangle axes in world coordinates, from the minimum-area rectangle
+        box_w = cam.pixel_to_world(box, z=cloth_z)[:, :2]
+        centre = box_w.mean(axis=0)
+        e1, e2 = box_w[1] - box_w[0], box_w[2] - box_w[1]
         long_e, short_e = (e1, e2) if np.linalg.norm(e1) >= np.linalg.norm(e2) else (e2, e1)
         u = long_e / np.linalg.norm(long_e)
         v = np.array([-u[1], u[0]])
@@ -217,3 +218,80 @@ class ClothDetector:
             pixel_corners=pix_corners,
             pixel_outline=pix_outline,
         )
+
+
+# ---------------------------------------------------------------- shirts
+@dataclass
+class ShirtFrame:
+    """Shirt's own axes on the floor: e_v points from hem to collar, e_h to the shirt's right."""
+
+    centre: np.ndarray
+    e_h: np.ndarray
+    e_v: np.ndarray
+
+    def to_local(self, pts: np.ndarray) -> np.ndarray:
+        d = np.atleast_2d(pts) - self.centre
+        return np.column_stack([d @ self.e_h, d @ self.e_v])
+
+    def to_world(self, hv: np.ndarray) -> np.ndarray:
+        hv = np.atleast_2d(hv)
+        return self.centre + hv[:, :1] * self.e_h + hv[:, 1:2] * self.e_v
+
+
+@dataclass
+class ShirtKeypoints:
+    sleeve_left: np.ndarray
+    sleeve_right: np.ndarray
+    hem_left: np.ndarray
+    hem_right: np.ndarray
+    body_centre_h: float  # body centre line, shirt frame
+    body_half_width: float
+
+
+def _poly(outline: np.ndarray) -> np.ndarray:
+    return outline.astype(np.float32).reshape(-1, 1, 2)
+
+
+def shirt_frame(obs: ClothObservation) -> ShirtFrame:
+    """Find a flat T-shirt's orientation from its silhouette alone.
+
+    1. The two principal axes of the shape (image moments).
+    2. The symmetry axis is the one the outline is mirror-symmetric about.
+    3. The collar end is the wider end (that's where the sleeves are).
+    A learned keypoint detector would replace this for real, messy shirts.
+    """
+    poly = _poly(obs.outline)
+    m = cv2.moments(poly)
+    c = np.array([m["m10"] / m["m00"], m["m01"] / m["m00"]])
+    theta = 0.5 * math.atan2(2 * m["mu11"], m["mu20"] - m["mu02"])
+    axes = [np.array([math.cos(theta), math.sin(theta)]), np.array([-math.sin(theta), math.cos(theta)])]
+
+    def asymmetry(a):
+        b = np.array([-a[1], a[0]])
+        d = obs.outline - c
+        mirrored = c + np.outer(d @ a, a) - np.outer(d @ b, b)
+        return float(np.mean([abs(cv2.pointPolygonTest(poly, (float(x), float(y)), True)) for x, y in mirrored]))
+
+    e_v = min(axes, key=asymmetry)
+    e_h = np.array([e_v[1], -e_v[0]])
+    v = (obs.outline - c) @ e_v
+    h = (obs.outline - c) @ e_h
+    span = v.max() - v.min()
+    top_w = np.ptp(h[v > v.max() - 0.3 * span])
+    bottom_w = np.ptp(h[v < v.min() + 0.3 * span])
+    if bottom_w > top_w:
+        e_v, e_h = -e_v, -e_h
+    return ShirtFrame(c, e_h, e_v)
+
+
+def shirt_keypoints(outline: np.ndarray, frame: ShirtFrame) -> ShirtKeypoints:
+    hv = frame.to_local(outline)
+    h, v = hv[:, 0], hv[:, 1]
+    pick = lambda score: frame.to_world(hv[np.argmin(score)])[0]
+    sleeve_left = pick(h)  # outermost point of each sleeve
+    sleeve_right = pick(-h)
+    hem_left = pick(h + v)  # most "bottom-left" point
+    hem_right = pick(-h + v)
+    band = (v > v.min() + 0.08) & (v < v.min() + 0.2)
+    lo, hi = h[band].min(), h[band].max()
+    return ShirtKeypoints(sleeve_left, sleeve_right, hem_left, hem_right, float((lo + hi) / 2), float((hi - lo) / 2))

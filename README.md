@@ -2,18 +2,20 @@
 
 Simulated "arms on wheels" that fold laundry, guided by one ceiling camera.
 
-![overview](output/after.png)
+![towel](output/after_towel.png) ![shirt](output/after_shirt.png)
 
 Two mobile robots and a towel on the floor. The ceiling camera locates
 everything; a director program plans the fold and steers every robot in a
-closed loop. Today it folds a towel in half twice.
+closed loop. It folds a towel in half twice, and a T-shirt with the standard
+retail fold (left side in, right side in, hem to collar).
 
 ## Run it
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-python scripts/run_fold_demo.py              # ~5 min, writes output/fold_demo.mp4
+python scripts/run_fold_demo.py                   # towel, ~5 min, writes output/fold_demo_towel.mp4
+python scripts/run_fold_demo.py --garment shirt   # T-shirt, ~15 min
 python scripts/run_fold_demo.py --fast       # no cloth self-collision, ~3x faster
 python scripts/run_fold_demo.py --seed 4     # different towel pose / wheel slip
 python -m pytest tests
@@ -32,6 +34,7 @@ laundrybot/
   kinematics.py   arm inverse kinematics
   geometry.py     robot dimensions (shared by sim and brain)
   viz.py          draws the brain's beliefs over the camera image
+  sim/garments.py towel + T-shirt cloth meshes
   sim/scene.py    builds the MuJoCo world (cloth, robots, markers, cameras)
   sim/world.py    simulated Camera + RobotDriver (with wheel slip)
 scripts/run_fold_demo.py
@@ -60,11 +63,27 @@ real webcam; the director stays the same.
    fine-position, lower, release, back off. On a failed grasp, let go and re-plan.
 8. Repeat.
 
+Every fold is the same primitive: *grab these points, lay them there*. A
+planner turns what the camera sees into those points; `plan_fold` then works
+out where each robot must stand so its base stays off the cloth while it
+carries, and which robot takes which point.
+
+### The shirt
+
+The shirt can lie in any orientation, so the director first works out its own
+frame from the silhouette: the shape's principal axes, the one the outline is
+mirror-symmetric about, and the wider end (sleeves) = collar. Then it finds
+sleeve tips and hem corners (within ~1.5 cm in tests). The fold lines sit far
+enough from the centre that each folded sleeve stays inside the opposite fold
+line, so the second side folds cleanly over the first.
+
 ## Honest limitations (what's simplified)
 
 | Simplification | Reality | Plan |
 |---|---|---|
-| "Magic pinch" gripper: closing grabs any cloth within 2.5 cm | Pinching thin fabric off a surface is the hardest physical bit | Prototype gripper on real hardware early; learn grasping from teleoperated demos |
+| "Magic pinch" gripper: closing grabs the fabric (all stacked layers) under the fingertip | Pinching thin fabric off a surface is the hardest physical bit | Prototype gripper on real hardware early; learn grasping from teleoperated demos |
+| Shirt is a single T-shaped layer | Real shirts are front + back sewn together (a flattened tube) | Two-layer mesh with seams; matters most for unfolding |
+| Shirt keypoints from geometry rules | Wrinkles, collars, buttons break hand-written rules | Learned keypoint detector, trained on rendered shirts |
 | Solid blue towel, plain floor; colour threshold finds it | Patterned clothes, on a bed, in a pile | Swap `ClothDetector` for a learned segmenter (train on synthetic renders from this sim + real photos) |
 | Towel starts laid flat | Laundry arrives crumpled | Flattening / unfolding is its own (harder) task, next big milestone |
 | Robots don't avoid each other; one obstacle (the towel) | Furniture, pets, each other | Proper multi-robot planner |

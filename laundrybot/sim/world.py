@@ -20,8 +20,10 @@ class SimWorld:
         self.model = mujoco.MjModel.from_xml_string(build_scene_xml(spec))
         self.data = mujoco.MjData(self.model)
         self.rng = np.random.default_rng(seed)
-        nv = spec.towel.n_vertices
-        self.vertex_body_ids = np.array([self.model.body(f"towel_{i}").id for i in range(nv)])
+        nv = spec.garment.n_vertices
+        self.vertex_body_ids = np.array([self.model.body(f"cloth_{i}").id for i in range(nv)])
+        m = self.model
+        self.elements = m.flex_elem[: m.flex_elemnum[0] * 3].reshape(-1, 3).copy()  # cloth triangles
         self.robots = [SimRobot(self, i, r.name, r.marker_id, spec.geometry, self.rng) for i, r in enumerate(spec.robots)]
         for r in self.robots:
             r.reset_arm()
@@ -65,14 +67,15 @@ class SimRobot:
       * wheel slip: every robot has its own speed-scale error and drift, so
         driving "blind" goes wrong - the director must use the camera.
       * servo speed limit: arm joints move toward their targets at <= 2.5 rad/s.
-      * gripper: pinches every cloth vertex within ~2.5 cm of the fingertip.
-        This is a simplification ("magic pinch"); real fabric grasping physics
-        is the hardest part to simulate and is better learned on hardware.
+      * gripper: pinches the fabric under the fingertip - every cloth triangle
+        (in every stacked layer) the fingertip is over, plus vertices within
+        2 cm. This is a simplification ("magic pinch"); real fabric grasping
+        physics is the hardest part to simulate and is better learned on hardware.
     """
 
     SERVO_SPEED = 2.5  # rad/s
-    PINCH_RADIUS = 0.025
-    PINCH_HEIGHT = 0.02
+    PINCH_RADIUS = 0.02
+    PINCH_HEIGHT = 0.035  # grabs a stack of up to ~4 layers
 
     def __init__(self, world: SimWorld, index: int, name: str, marker_id: int, g: RobotGeometry, rng):
         self.world, self.index, self.name, self.marker_id, self.g = world, index, name, marker_id, g
@@ -84,7 +87,7 @@ class SimRobot:
         self._arm_qadr = [m.joint(f"{name}_q{i}").qposadr[0] for i in (1, 2, 3)]
         self._tip_body = m.body(f"{name}_tip").id
         self._tip_geom = m.geom(f"{name}_tipgeom").id
-        nv = world.spec.towel.n_vertices
+        nv = world.spec.garment.n_vertices
         self._eq_ids = np.array([m.equality(f"{name}_grip{i}").id for i in range(nv)])
         # wheel slip personality
         self._scale = 1 + rng.normal(0, 0.08, size=3)
@@ -109,6 +112,18 @@ class SimRobot:
             verts = self.world.vertex_positions()
             delta = verts - tip
             near = (np.hypot(delta[:, 0], delta[:, 1]) < self.PINCH_RADIUS) & (np.abs(delta[:, 2]) < self.PINCH_HEIGHT)
+            # triangles whose footprint contains the fingertip (barycentric test, small margin)
+            tri = verts[self.world.elements]  # T x 3 x 3
+            a, b, c = tri[:, 0, :2], tri[:, 1, :2], tri[:, 2, :2]
+            v0, v1, v2 = b - a, c - a, tip[:2] - a
+            den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+            den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+            l1 = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / den
+            l2 = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / den
+            bary = np.column_stack([1 - l1 - l2, l1, l2])
+            z = np.sum(bary * tri[:, :, 2], axis=1)
+            under = (bary.min(axis=1) > -0.1) & (np.abs(z - tip[2]) < self.PINCH_HEIGHT)
+            near[np.unique(self.world.elements[under])] = True
             for vi in np.flatnonzero(near):
                 eq = self._eq_ids[vi]
                 m.eq_data[eq, 0:3] = 0.0

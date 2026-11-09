@@ -8,7 +8,7 @@ import numpy as np
 
 from .director import Director
 
-GREEN, RED, CYAN, YELLOW, WHITE, BLACK = (40, 200, 60), (230, 40, 40), (0, 170, 230), (250, 200, 0), (255, 255, 255), (0, 0, 0)
+GREEN, RED, CYAN, YELLOW, WHITE, BLACK, MAGENTA = (40, 200, 60), (230, 40, 40), (0, 170, 230), (250, 200, 0), (255, 255, 255), (0, 0, 0), (230, 0, 200)
 
 
 def _text(img, s, org, scale=0.9, color=WHITE):
@@ -28,6 +28,16 @@ def draw_overlay(director: Director, image: np.ndarray) -> np.ndarray:
         cv2.polylines(img, [pts], True, GREEN, 2, cv2.LINE_AA)
         for i, p in enumerate(cam.world_to_pixel(c.corners).astype(int)):
             cv2.circle(img, tuple(p), 9, RED, -1, cv2.LINE_AA)
+    if director.fold_line is not None:
+        a, b = cam.world_to_pixel(np.array(director.fold_line))
+        n = 14
+        for i in range(0, n, 2):  # dashed
+            p, q = a + (b - a) * i / n, a + (b - a) * (i + 1) / n
+            cv2.line(img, tuple(p.astype(int)), tuple(q.astype(int)), MAGENTA, 3, cv2.LINE_AA)
+    for name, pt in director.keypoints.items():
+        p = cam.world_to_pixel(np.atleast_2d(pt))[0].astype(int)
+        cv2.circle(img, tuple(p), 8, MAGENTA, -1, cv2.LINE_AA)
+        _text(img, name, (p[0] + 10, p[1] - 10), 0.6, MAGENTA)
     for rs in director.robots:
         if rs.id not in director.tracker.poses:
             continue
