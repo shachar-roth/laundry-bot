@@ -3,23 +3,23 @@
   "seed": 0,
   "success": true,
   "error": null,
-  "sim_seconds": 76.6,
-  "wall_seconds": 804.5,
+  "sim_seconds": 69.0,
+  "wall_seconds": 933.0,
   "footprint_m2": {
     "before": 0.4847,
-    "after": 0.1577
+    "after": 0.0767
   },
-  "footprint_ratio": 0.325,
+  "footprint_ratio": 0.158,
   "ideal_ratio": null,
   "final_size_m": [
-    0.477,
-    0.419
+    0.367,
+    0.269
   ],
-  "max_cloth_height_m": 0.086,
+  "max_cloth_height_m": 0.152,
   "camera_reprojection_error_px": 0.16982426967685227,
   "tracking_error_mm": {
-    "mean": 0.81,
-    "max": 2.46
+    "mean": 0.82,
+    "max": 2.63
   },
   "heading_error_deg": {
     "mean": 0.37,
@@ -33,14 +33,14 @@
     "   0.2s r1: grab [ 0.329 -0.456] -> place at [-0.052 -0.557]",
     "   0.2s r0: grab [0.148 0.524] -> place at [-0.376  0.386]",
     "  25.6s fold 1/3 leg over leg done",
-    "  25.7s cloth seen: 1.00 x 0.23 m, area 0.200 m^2",
-    "  25.7s r1: grab [-0.177  0.423] -> place at [ 0.072 -0.521]",
-    "  25.7s r0: grab [-0.368  0.378] -> place at [-0.118 -0.576]",
-    "  55.1s fold 2/3 hems to waist done",
-    "  55.2s cloth seen: 0.82 x 0.33 m, area 0.160 m^2",
-    "  55.2s r1: grab [-0.151  0.125] -> place at [ 0.012 -0.493]",
-    "  55.2s r0: grab [-0.355  0.112] -> place at [-0.173 -0.583]",
-    "  76.5s fold 3/3 in half again done",
-    "  76.6s cloth seen: 0.48 x 0.42 m, area 0.148 m^2"
+    "  25.7s cloth seen: 1.00 x 0.23 m, area 0.199 m^2",
+    "  25.7s r1: grab [-0.161  0.378] -> place at [ 0.063 -0.473]",
+    "  25.7s r0: grab [-0.372  0.323] -> place at [-0.147 -0.529]",
+    "  53.5s fold 2/3 hems to waist done",
+    "  53.6s cloth seen: 0.50 x 0.30 m, area 0.123 m^2",
+    "  53.6s r1: grab [ 0.005 -0.125] -> place at [ 0.102 -0.494]",
+    "  53.6s r0: grab [-0.222 -0.19 ] -> place at [-0.128 -0.549]",
+    "  68.9s fold 3/3 in half again done",
+    "  69.0s cloth seen: 0.37 x 0.27 m, area 0.076 m^2"
   ]
 }
