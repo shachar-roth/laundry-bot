@@ -1,0 +1,36 @@
+{
+  "seed": 0,
+  "success": true,
+  "error": null,
+  "sim_seconds": 42.8,
+  "wall_seconds": 305.2,
+  "towel_footprint_m2": {
+    "before": 0.35,
+    "after": 0.0952
+  },
+  "footprint_ratio": 0.272,
+  "ideal_ratio": 0.25,
+  "max_cloth_height_m": 0.068,
+  "camera_reprojection_error_px": 0.14717900096595132,
+  "tracking_error_mm": {
+    "mean": 0.77,
+    "max": 2.16
+  },
+  "heading_error_deg": {
+    "mean": 0.38,
+    "max": 1.12
+  },
+  "events": [
+    "   0.1s camera calibrated from floor markers (reprojection error 0.15 px)",
+    "   0.1s all robots located: r0 at [-1.05 -0.8 ], r1 at [ 1.03 -0.8 ]",
+    "   0.2s towel seen: 0.70 x 0.50 m, area 0.347 m^2",
+    "   0.2s r1: grab corner [ 0.117 -0.463] -> place at [0.393 0.173]",
+    "   0.2s r0: grab corner [-0.336 -0.266] -> place at [-0.06  0.37]",
+    "  21.2s fold 1/2 done",
+    "  21.3s towel seen: 0.50 x 0.36 m, area 0.175 m^2",
+    "  21.3s r0: grab corner [ 0.252 -0.142] -> place at [-0.201  0.058]",
+    "  21.3s r1: grab corner [0.39  0.176] -> place at [-0.063  0.375]",
+    "  42.7s fold 2/2 done",
+    "  42.8s towel seen: 0.38 x 0.30 m, area 0.096 m^2"
+  ]
+}
