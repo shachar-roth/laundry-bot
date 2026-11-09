@@ -2,12 +2,13 @@
 
 Simulated "arms on wheels" that fold laundry, guided by one ceiling camera.
 
-![towel](output/after_towel.png) ![shirt](output/after_shirt.png)
+![towel](output/after_towel.png) ![shirt](output/after_shirt.png) ![pants](output/after_pants.png)
 
 Two mobile robots and a towel on the floor. The ceiling camera locates
 everything; a director program plans the fold and steers every robot in a
-closed loop. It folds a towel in half twice, and a T-shirt with the standard
-retail fold (left side in, right side in, hem to collar).
+closed loop. It folds a towel in half twice, a T-shirt with the standard
+retail fold (left side in, right side in, hem to collar), and trousers (leg
+over leg, hems to waist, in half again).
 
 ## Run it
 
@@ -15,7 +16,8 @@ retail fold (left side in, right side in, hem to collar).
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python scripts/run_fold_demo.py                   # towel, ~5 min, writes output/fold_demo_towel.mp4
-python scripts/run_fold_demo.py --garment shirt   # T-shirt, ~15 min
+python scripts/run_fold_demo.py --garment shirt   # T-shirt, ~10 min
+python scripts/run_fold_demo.py --garment pants   # trousers, ~10 min
 python scripts/run_fold_demo.py --fast       # no cloth self-collision, ~3x faster
 python scripts/run_fold_demo.py --seed 4     # different towel pose / wheel slip
 python -m pytest tests
@@ -34,7 +36,7 @@ laundrybot/
   kinematics.py   arm inverse kinematics
   geometry.py     robot dimensions (shared by sim and brain)
   viz.py          draws the brain's beliefs over the camera image
-  sim/garments.py towel + T-shirt cloth meshes
+  sim/garments.py towel, T-shirt and trousers cloth meshes
   sim/scene.py    builds the MuJoCo world (cloth, robots, markers, cameras)
   sim/world.py    simulated Camera + RobotDriver (with wheel slip)
 scripts/run_fold_demo.py
@@ -77,12 +79,29 @@ sleeve tips and hem corners (within ~1.5 cm in tests). The fold lines sit far
 enough from the centre that each folded sleeve stays inside the opposite fold
 line, so the second side folds cleanly over the first.
 
+### The pants
+
+Same silhouette trick, but "which end is the top" needs a different rule:
+trousers with splayed legs are *widest at the hems*, so instead the waist is
+the end where the centre line runs through fabric (the other end has the gap
+between the legs). Fold 1 grabs the left waist corner and left outer hem and
+mirrors them across the centre line; folds 2 and 3 grab the two bottom
+corners and lay them on the top edge.
+
+### Staying in view
+
+The floor markers also mark out the robots' work area: robots never plan to
+leave it, and back-offs are shortened near its edge. If the camera loses a
+robot anyway, it creeps back toward the middle on its last known heading;
+after 8 s the fold aborts with an error instead of hanging.
+
 ## Honest limitations (what's simplified)
 
 | Simplification | Reality | Plan |
 |---|---|---|
 | "Magic pinch" gripper: closing grabs the fabric (all stacked layers) under the fingertip | Pinching thin fabric off a surface is the hardest physical bit | Prototype gripper on real hardware early; learn grasping from teleoperated demos |
-| Shirt is a single T-shaped layer | Real shirts are front + back sewn together (a flattened tube) | Two-layer mesh with seams; matters most for unfolding |
+| Shirt and pants are single flat layers | Real garments are front + back sewn together (flattened tubes) | Two-layer meshes with seams; matters most for unfolding |
+| Arm lifts to 30 cm | Folding 1 m pants in half ideally lifts the hems 50 cm; the fabric drags over itself | Taller arm, or fold in thirds / drag-fold on purpose |
 | Shirt keypoints from geometry rules | Wrinkles, collars, buttons break hand-written rules | Learned keypoint detector, trained on rendered shirts |
 | Solid blue towel, plain floor; colour threshold finds it | Patterned clothes, on a bed, in a pile | Swap `ClothDetector` for a learned segmenter (train on synthetic renders from this sim + real photos) |
 | Towel starts laid flat | Laundry arrives crumpled | Flattening / unfolding is its own (harder) task, next big milestone |
