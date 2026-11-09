@@ -446,9 +446,13 @@ class Director:
         hv = frame.to_local(cloth.outline)
         h, v = hv[:, 0], hv[:, 1]
         v0 = (v.min() + v.max()) / 2
-        # outline points nearest the bottom corners of the garment's bounding box
-        corner = lambda hc: frame.to_world(hv[np.argmin(np.hypot(h - hc, v - v.min()))])[0]
-        bl, br = corner(h.min()), corner(h.max())
+        # leftmost / rightmost outline points along the bottom edge (a 6 cm band:
+        # works for square corners and for the rounded crease of an earlier fold)
+        band = np.flatnonzero(v < v.min() + 0.06)
+        bl = frame.to_world(hv[band[np.argmin(h[band])]])[0]
+        br = frame.to_world(hv[band[np.argmax(h[band])]])[0]
+        if np.linalg.norm(br - bl) < 0.4 * np.ptp(h):
+            self.log(f"warning: bottom corners only {np.linalg.norm(br - bl):.2f} m apart")
         grabs = [bl, br]
         self.keypoints = {"bottom L": bl, "bottom R": br}
         self.fold_line = tuple(frame.to_world(np.array([[h.min() - 0.08, v0], [h.max() + 0.08, v0]])))
