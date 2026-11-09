@@ -219,11 +219,14 @@ class Director:
             self.log(f"{rs.driver.name}: back in view")
             rs.status = "found"
 
-    def drive_to(self, rs: RobotState, goal: Pose2D, avoid_cloth: bool = True, pos_tol=0.008, yaw_tol=0.02, timeout=40.0) -> Task:
-        """Closed-loop drive to a pose, going around the towel if needed."""
+    def drive_to(
+        self, rs: RobotState, goal: Pose2D, avoid_cloth: bool = True, avoid_robots=(), pos_tol=0.008, yaw_tol=0.02, timeout=40.0
+    ) -> Task:
+        """Closed-loop drive to a pose, going around the cloth (and any robots
+        in avoid_robots) if needed."""
         yield from self.wait_until_tracked(rs)
         start = self.pose(rs).xy
-        path = self.plan_path(start, goal.xy) if avoid_cloth else [goal.xy]
+        path = self.plan_path(start, goal.xy, avoid_robots) if avoid_cloth else [goal.xy]
         rs.path = [start] + path
         t0 = self.t
         settled = 0
@@ -283,34 +286,44 @@ class Director:
         c = self.cloth
         return c.centre, c.u, c.v, c.half_long + margin, c.half_short + margin
 
+    def _robot_box(self, other: RobotState, margin: float):
+        """Keep-out square around another robot (its size + ours + margin)."""
+        hw = 2 * self.g.footprint_radius + margin
+        return self.pose(other).xy, np.array([1.0, 0.0]), np.array([0.0, 1.0]), hw, hw
+
     def _inside(self, p: np.ndarray, box) -> bool:
         centre, u, v, hu, hv = box
         d = p - centre
         return abs(d @ u) < hu and abs(d @ v) < hv
 
-    def _segment_clear(self, a: np.ndarray, b: np.ndarray, box) -> bool:
+    def _segment_clear(self, a: np.ndarray, b: np.ndarray, boxes) -> bool:
         n = max(2, int(np.linalg.norm(b - a) / 0.01))
-        return not any(self._inside(a + (b - a) * s, box) for s in np.linspace(0, 1, n)[1:-1])
+        return not any(self._inside(a + (b - a) * s, box) for s in np.linspace(0, 1, n)[1:-1] for box in boxes)
 
-    def plan_path(self, start: np.ndarray, goal: np.ndarray) -> list[np.ndarray]:
-        """Shortest way around the towel (its rectangle grown by the robot's size).
+    def plan_path(self, start: np.ndarray, goal: np.ndarray, avoid: list[RobotState] = ()) -> list[np.ndarray]:
+        """Shortest way around the cloth (its rectangle grown by the robot's
+        size) and around other robots (squares around them).
 
-        Visibility graph over the grown rectangle's corners + Dijkstra. Good
-        enough for one obstacle; a home with furniture needs a real planner.
+        Visibility graph over the obstacles' corners + Dijkstra. Good enough
+        for a few obstacles; a home with furniture needs a real planner.
         """
-        if self.cloth is None:
-            return [goal]
         margin = self.g.footprint_radius + 0.05
-        box = self._cloth_box(margin)
+        boxes = ([self._cloth_box(margin)] if self.cloth is not None else []) + [self._robot_box(r, 0.04) for r in avoid]
+        boxes = [b for b in boxes if not self._inside(goal, b)]  # never let an obstacle hide the goal
+        if not boxes:
+            return [goal]
         prefix = []
-        if self._inside(start, box):  # already too close: back straight out first
-            centre, u, v, hu, hv = box
-            d = start - centre
-            du, dv = hu - abs(d @ u), hv - abs(d @ v)
-            out = start + (u * np.sign(d @ u) * (du + 0.02) if du < dv else v * np.sign(d @ v) * (dv + 0.02))
-            prefix, start = [out], out
-        centre, u, v, hu, hv = self._cloth_box(margin + 0.03)
-        nodes = [start, goal] + [centre + su * hu * u + sv * hv * v for su in (-1, 1) for sv in (-1, 1)]
+        for box in boxes:
+            if self._inside(start, box):  # already too close: back straight out first
+                centre, u, v, hu, hv = box
+                d = start - centre
+                du, dv = hu - abs(d @ u), hv - abs(d @ v)
+                out = start + (u * np.sign(d @ u) * (du + 0.02) if du < dv else v * np.sign(d @ v) * (dv + 0.02))
+                prefix.append(out)
+                start = out
+        nodes = [start, goal]
+        for centre, u, v, hu, hv in boxes:
+            nodes += [centre + su * (hu + 0.03) * u + sv * (hv + 0.03) * v for su in (-1, 1) for sv in (-1, 1)]
         dist = {0: 0.0}
         prev: dict[int, int] = {}
         heap = [(0.0, 0)]
@@ -321,7 +334,7 @@ class Director:
             if d > dist.get(i, math.inf):
                 continue
             for j in range(len(nodes)):
-                if j != i and self._segment_clear(nodes[i], nodes[j], box):
+                if j != i and self._segment_clear(nodes[i], nodes[j], boxes):
                     nd = d + float(np.linalg.norm(nodes[j] - nodes[i]))
                     if nd < dist.get(j, math.inf):
                         dist[j], prev[j] = nd, i
@@ -333,6 +346,29 @@ class Director:
             path.append(nodes[i])
             i = prev[i]
         return prefix + path[::-1]
+
+    def drive_all(self, moves: list[tuple[RobotState, Pose2D]]) -> Task:
+        """Send robots to their poses without running into each other: in
+        parallel when their routes stay apart, otherwise one at a time, each
+        steering around the others."""
+        gap = 2 * self.g.footprint_radius + 0.1
+        def seg_dist(a0, a1, b0, b1):
+            pa = [a0 + (a1 - a0) * t for t in np.linspace(0, 1, 20)]
+            pb = [b0 + (b1 - b0) * t for t in np.linspace(0, 1, 20)]
+            return min(np.linalg.norm(p - q) for p in pa for q in pb)
+        close = any(
+            seg_dist(self.pose(r1).xy, g1.xy, self.pose(r2).xy, g2.xy) < gap
+            for (r1, g1), (r2, g2) in itertools.combinations(moves, 2)
+        )
+        if not close:
+            yield from parallel(*(self.drive_to(r, g) for r, g in moves))
+            return
+        # one at a time: whoever's route passes nearest another robot goes last
+        def worst(rg):
+            r, g = rg
+            return min(seg_dist(self.pose(r).xy, g.xy, self.pose(o).xy, self.pose(o).xy) for o, _ in moves if o is not r)
+        for r, g in sorted(moves, key=worst, reverse=True):
+            yield from self.drive_to(r, g, avoid_robots=[o for o, _ in moves if o is not r])
 
     # -------------------------------------------------------------- cloth
     def observe_cloth(self) -> Task:
@@ -408,8 +444,9 @@ class Director:
         hv = frame.to_local(cloth.outline)
         h, v = hv[:, 0], hv[:, 1]
         v0 = (v.min() + v.max()) / 2
-        bl = frame.to_world(hv[np.argmin(h + v)])[0]  # most bottom-left / bottom-right
-        br = frame.to_world(hv[np.argmin(-h + v)])[0]
+        # outline points nearest the bottom corners of the garment's bounding box
+        corner = lambda hc: frame.to_world(hv[np.argmin(np.hypot(h - hc, v - v.min()))])[0]
+        bl, br = corner(h.min()), corner(h.max())
         grabs = [bl, br]
         self.keypoints = {"bottom L": bl, "bottom R": br}
         self.fold_line = tuple(frame.to_world(np.array([[h.min() - 0.08, v0], [h.max() + 0.08, v0]])))
@@ -448,15 +485,29 @@ class Director:
         it faces perpendicular to the carry direction - on whichever side keeps
         its base off the cloth for the whole carry.
         """
-        legs = []
+        options = []  # per grab point: both possible sides to stand on
         for gp, pp in zip(grabs, places):
             d = pp - gp
             perp = np.array([-d[1], d[0]]) / np.linalg.norm(d)
-            options = []
+            opts = []
             for n in (perp, -perp):
-                path = [gp - n * self.REACH + d * s for s in np.linspace(0, 1, 8)]
-                options.append((self._clearance(np.array(path)), n))
-            clearance, n = max(options, key=lambda o: o[0])
+                path = np.array([gp - n * self.REACH + d * s for s in np.linspace(0, 1, 8)])
+                opts.append((self._clearance(path), n, path))
+            options.append(opts)
+        # Choose sides for all robots together: keep every base off the cloth
+        # AND keep robots at least two bodies apart for the whole carry.
+        gap = 2 * self.g.footprint_radius + 0.05
+        def score(combo):
+            clear = min(o[0] for o in combo)
+            sep = min(
+                (np.min(np.linalg.norm(a[2] - b[2], axis=1)) for a, b in itertools.combinations(combo, 2)), default=math.inf
+            )
+            return (sep >= gap, clear if sep >= gap else sep)
+        combo = max(itertools.product(*options), key=score)
+        if not score(combo)[0]:
+            raise FoldFailed("no way to place the robots without them colliding")
+        legs = []
+        for gp, pp, (clearance, n, _) in zip(grabs, places, combo):
             if clearance < self.g.footprint_radius:
                 self.log(f"warning: robot will pass within {clearance:.2f} m of the cloth")
             facing = math.atan2(n[1], n[0])
@@ -543,7 +594,7 @@ class Director:
             for a in plan:
                 self.log(f"{a.robot.driver.name}: grab {np.round(a.grab, 3)} -> place at {np.round(a.place, 3)}")
             self.phase = f"{label}: robots to start positions"
-            yield from parallel(*(self.drive_to(a.robot, a.stage) for a in plan))
+            yield from self.drive_all([(a.robot, a.stage) for a in plan])
             self.phase = f"{label}: grasping"
             ok = yield from parallel(*(self.pick(a.robot, a.grab, inset=0.015 * attempt) for a in plan))
             if all(ok):

@@ -105,6 +105,6 @@ after 8 s the fold aborts with an error instead of hanging.
 | Shirt keypoints from geometry rules | Wrinkles, collars, buttons break hand-written rules | Learned keypoint detector, trained on rendered shirts |
 | Solid blue towel, plain floor; colour threshold finds it | Patterned clothes, on a bed, in a pile | Swap `ClothDetector` for a learned segmenter (train on synthetic renders from this sim + real photos) |
 | Towel starts laid flat | Laundry arrives crumpled | Flattening / unfolding is its own (harder) task, next big milestone |
-| Robots don't avoid each other; one obstacle (the towel) | Furniture, pets, each other | Proper multi-robot planner |
+| Robots avoid each other with simple keep-out squares, and take turns when routes cross | Furniture, pets, more robots | Proper multi-robot planner |
 | Arm reaches forward only (planar, 3 pitch joints) | SO-101 also has pan + wrist roll | Add when needed; the base turning covers it for now |
 | Cloth simulated as stretch-free mesh, no bending stiffness | Real fabrics vary a lot | Fine for planning; real behaviour comes from real data |
