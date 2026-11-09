@@ -122,6 +122,11 @@ class Director:
     ):
         self.cam = CameraModel(K)
         self.floor_markers = floor_markers
+        # Robots stay inside the rectangle spanned by the floor markers: that
+        # area is known to be in camera view (the markers themselves are).
+        xy = np.array([(x, y) for x, y, _ in floor_markers.values()])
+        self.bounds = (xy.min(axis=0), xy.max(axis=0))
+        self.work_centre = xy.mean(axis=0)
         self.g = geometry
         self.robots = [RobotState(r, np.array(self.HOME_TIP, float)) for r in robots]
         self.tracker = RobotTracker(self.cam, geometry, [r.id for r in self.robots])
@@ -184,11 +189,35 @@ class Director:
         yield from self.wait(0.3)  # let the servos catch up
 
     # ------------------------------------------------------------------ base
-    def wait_until_tracked(self, rs: RobotState) -> Task:
+    def in_bounds(self, xy: np.ndarray, margin: float = 0.0) -> bool:
+        """Is xy inside the work area marked out by the floor markers?"""
+        (x0, y0), (x1, y1) = self.bounds
+        return x0 + margin <= xy[0] <= x1 - margin and y0 + margin <= xy[1] <= y1 - margin
+
+    def wait_until_tracked(self, rs: RobotState, recover_after: float = 1.0, give_up_after: float = 8.0) -> Task:
+        """Pause a robot the camera can't see. If it stays lost, creep it back
+        toward the middle of the work area (steering by its last known
+        heading) until the camera finds it again."""
         while self.tracker.age(rs.id, self.t) > self.STALE_LIMIT:
-            self.stop(rs)
-            rs.status = "lost - waiting for camera"
+            lost_for = self.tracker.age(rs.id, self.t)
+            if lost_for > give_up_after:
+                self.stop(rs)
+                raise FoldFailed(f"{rs.driver.name}: lost by the camera for {lost_for:.0f} s")
+            if lost_for > recover_after and rs.id in self.tracker.poses:
+                rs.status = "lost - creeping back into view"
+                last = self.tracker.poses[rs.id]
+                to_centre = self.work_centre - last.xy
+                v = to_centre / max(np.linalg.norm(to_centre), 1e-6) * 0.08
+                c, s = math.cos(last.yaw), math.sin(last.yaw)
+                rs.driver.set_base_velocity(c * v[0] + s * v[1], -s * v[0] + c * v[1], 0.0)
+            else:
+                self.stop(rs)
+                rs.status = "lost - waiting for camera"
             yield
+        if rs.status.startswith("lost"):
+            self.stop(rs)
+            self.log(f"{rs.driver.name}: back in view")
+            rs.status = "found"
 
     def drive_to(self, rs: RobotState, goal: Pose2D, avoid_cloth: bool = True, pos_tol=0.008, yaw_tol=0.02, timeout=40.0) -> Task:
         """Closed-loop drive to a pose, going around the towel if needed."""
@@ -432,6 +461,8 @@ class Director:
                 self.log(f"warning: robot will pass within {clearance:.2f} m of the cloth")
             facing = math.atan2(n[1], n[0])
             stage = gp - n * self.REACH
+            if not self.in_bounds(stage):
+                self.log(f"warning: start position {np.round(stage, 2)} is outside the marked work area")
             legs.append((gp, pp, facing, Pose2D(stage[0], stage[1], facing)))
         robots = self.robots[: len(legs)]
         best = min(
@@ -465,8 +496,11 @@ class Director:
         yield from self.wait(0.4)
         yield from self.move_arm(rs, rs.tip[0], self.HOVER_Z)
         p = self.pose(rs)
-        goal = Pose2D(*(p.xy - p.heading * back), p.yaw)
-        yield from self.drive_to(rs, goal, avoid_cloth=False, pos_tol=0.02, yaw_tol=0.05)
+        while back > 0.02 and not self.in_bounds(p.xy - p.heading * back):
+            back /= 2  # don't back out of the camera's view
+        if back > 0.02:
+            goal = Pose2D(*(p.xy - p.heading * back), p.yaw)
+            yield from self.drive_to(rs, goal, avoid_cloth=False, pos_tol=0.02, yaw_tol=0.05)
         yield from self.move_arm(rs, *self.HOME_TIP)
         rs.status = "idle"
 

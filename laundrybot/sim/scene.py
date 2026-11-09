@@ -34,10 +34,10 @@ class SceneSpec:
     geometry: RobotGeometry = field(default_factory=RobotGeometry)
     # Floor markers {id: (x, y, size)} - their positions are "measured" once at install time
     floor_markers: dict[int, tuple[float, float, float]] = field(
-        default_factory=lambda: {0: (-1.45, 1.1, 0.14), 1: (1.45, 1.1, 0.14), 2: (1.45, -1.1, 0.14), 3: (-1.45, -1.1, 0.14)}
+        default_factory=lambda: {0: (-1.6, 1.25, 0.16), 1: (1.6, 1.25, 0.16), 2: (1.6, -1.25, 0.16), 3: (-1.6, -1.25, 0.16)}
     )
     camera_height: float = 2.6
-    camera_fovy_deg: float = 55.0
+    camera_fovy_deg: float = 62.0  # wide-ish lens: home ceilings are only ~2.6 m
     camera_res: tuple[int, int] = (1280, 960)  # (W, H)
 
 
@@ -156,7 +156,7 @@ def build_scene_xml(spec: SceneSpec) -> str:
   </asset>
   <worldbody>
     <light directional="true" pos="0.5 -0.5 3" dir="-0.15 0.15 -1" diffuse="0.5 0.5 0.5" castshadow="true"/>
-    <geom name="floor" type="plane" size="2.5 2 0.1" material="floor" friction="0.8" contype="1" conaffinity="1"/>
+    <geom name="floor" type="plane" size="3 2.4 0.1" material="floor" friction="0.8" contype="1" conaffinity="1"/>
     {floor_markers}
     <camera name="overhead" pos="0 0 {spec.camera_height}" fovy="{spec.camera_fovy_deg}"/>
     <camera name="view" pos="0 -2.9 2.1" xyaxes="1 0 0 0 0.6 0.8" fovy="50"/>
