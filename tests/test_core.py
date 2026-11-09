@@ -103,3 +103,29 @@ def test_shirt_orientation_and_keypoints(yaw):
     }
     for name, local in expected.items():
         assert np.linalg.norm(getattr(k, name) - (R @ np.asarray(local) + centre)) < 0.025, name
+
+
+@pytest.mark.parametrize("yaw", [0.0, 2.2, -1.5])
+def test_pants_orientation_and_keypoints(yaw):
+    from laundrybot.perception import garment_frame, pants_keypoints
+    from laundrybot.sim.garments import PantsSpec
+
+    centre = np.array([0.03, -0.02])
+    spec = SceneSpec(
+        garment=PantsSpec(centre=tuple(centre), yaw=yaw, self_collision=False),
+        robots=[RobotSpec("r0", 10, -0.95, -0.8, math.pi / 2), RobotSpec("r1", 11, 0.95, -0.8, math.pi / 2)],
+    )
+    world = SimWorld(spec)
+    world.step(0.2)
+    cam = SimCamera(world)
+    img = cam.capture()
+    cam.renderer.close()
+    model = CameraModel(cam.K)
+    model.calibrate(detect_markers(img), spec.floor_markers)
+    obs = ClothDetector().detect(img, model)
+    frame = garment_frame(obs, top="closed")
+    assert frame.e_v @ np.array([-math.sin(yaw), math.cos(yaw)]) > math.cos(math.radians(3))  # waist found
+    k = pants_keypoints(obs.outline, frame)
+    R = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+    for name, local in {"waist_left": (-0.2, 0.5), "waist_right": (0.2, 0.5), "hem_left": (-0.27, -0.5), "hem_right": (0.27, -0.5)}.items():
+        assert np.linalg.norm(getattr(k, name) - (R @ np.asarray(local) + centre)) < 0.025, name

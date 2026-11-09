@@ -3,6 +3,7 @@
 
     python scripts/run_fold_demo.py --seed 3                  # towel, folded in half twice
     python scripts/run_fold_demo.py --garment shirt --seed 3  # T-shirt, retail fold
+    python scripts/run_fold_demo.py --garment pants --seed 3  # trousers
 
 Writes to output/: fold_demo.mp4 (camera view with the director's overlay +
 a side view), before/after images, and summary.json.
@@ -23,7 +24,7 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from laundrybot.director import CTRL_DT, Director, FoldFailed  # noqa: E402
-from laundrybot.sim.scene import RobotSpec, SceneSpec, ShirtSpec, TowelSpec  # noqa: E402
+from laundrybot.sim.scene import PantsSpec, RobotSpec, SceneSpec, ShirtSpec, TowelSpec  # noqa: E402
 from laundrybot.sim.world import SimCamera, SimWorld  # noqa: E402
 from laundrybot.viz import draw_overlay  # noqa: E402
 
@@ -33,6 +34,8 @@ def make_scene(seed: int, garment: str = "towel", fast: bool = False) -> SceneSp
     centre = tuple(rng.uniform(-0.1, 0.1, 2))
     if garment == "shirt":  # any orientation: the director has to work out where the collar is
         item = ShirtSpec(centre=centre, yaw=float(rng.uniform(-math.pi, math.pi)), self_collision=not fast)
+    elif garment == "pants":  # 1 m long: keep it near the middle so robots at both ends stay in view
+        item = PantsSpec(centre=tuple(np.asarray(centre) / 2), yaw=float(rng.uniform(-math.pi, math.pi)), self_collision=not fast)
     else:
         item = TowelSpec(centre=centre, yaw=float(rng.uniform(-0.45, 0.45)), self_collision=not fast)
     robots = [
@@ -50,7 +53,7 @@ def footprint_area(xy: np.ndarray) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--garment", choices=["towel", "shirt"], default="towel")
+    ap.add_argument("--garment", choices=["towel", "shirt", "pants"], default="towel")
     ap.add_argument("--folds", type=int, default=2, help="towel only")
     ap.add_argument("--max-time", type=float, default=240.0, help="simulated seconds")
     ap.add_argument("--out", type=Path, default=ROOT / "output")
@@ -64,7 +67,7 @@ def main() -> int:
     camera = SimCamera(world)
     side_view = None if args.no_video else SimCamera(world, "view")
     director = Director(camera.K, spec.floor_markers, world.robots, spec.geometry)
-    task = director.fold_shirt() if args.garment == "shirt" else director.fold_towel(args.folds)
+    task = {"shirt": director.fold_shirt, "pants": director.fold_pants}.get(args.garment, lambda: director.fold_towel(args.folds))()
 
     writer = None
     if not args.no_video:

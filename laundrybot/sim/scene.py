@@ -14,7 +14,7 @@ import numpy as np
 
 from ..geometry import RobotGeometry
 from ..perception import ARUCO_DICT
-from .garments import ShirtSpec, TowelSpec  # noqa: F401  (re-exported)
+from .garments import PantsSpec, ShirtSpec, TowelSpec  # noqa: F401  (re-exported)
 
 
 @dataclass
@@ -29,7 +29,7 @@ class RobotSpec:
 
 @dataclass
 class SceneSpec:
-    garment: TowelSpec | ShirtSpec = field(default_factory=TowelSpec)
+    garment: TowelSpec | ShirtSpec | PantsSpec = field(default_factory=TowelSpec)
     robots: list[RobotSpec] = field(default_factory=list)
     geometry: RobotGeometry = field(default_factory=RobotGeometry)
     # Floor markers {id: (x, y, size)} - their positions are "measured" once at install time

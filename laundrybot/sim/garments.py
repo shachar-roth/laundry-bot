@@ -94,17 +94,32 @@ def mesh_polygon(poly: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
     return pts, np.array(keep)
 
 
+def pants_outline(waist=0.40, hip=0.46, length=1.0, rise=0.28, hem=0.20, hem_splay=0.04) -> np.ndarray:
+    """Trousers laid flat, waistband toward +y, legs slightly apart. Counter-clockwise."""
+    top = length / 2
+    crotch = (0.0, top - rise)
+    outer_hem_x = hip / 2 + hem_splay
+    right = [crotch, (outer_hem_x - hem, -top), (outer_hem_x, -top), (hip / 2, top - rise + 0.06), (waist / 2, top)]
+    left = [(-x, y) for x, y in reversed(right[1:])]
+    return np.array(right + left, dtype=float)
+
+
 @dataclass
-class ShirtSpec:
+class _FlatGarment:
+    """A garment made from one flat polygon (laid out with its top toward +y at yaw 0)."""
+
     centre: tuple[float, float] = (0.0, 0.0)
-    yaw: float = 0.0  # 0 = collar toward +y
+    yaw: float = 0.0
     mesh_size: float = 0.045
     mass: float = 0.18
     rgba: tuple = (0.12, 0.3, 0.8, 1.0)
     self_collision: bool = True
 
+    def outline(self) -> np.ndarray:
+        raise NotImplementedError
+
     def __post_init__(self):
-        local, self.elements = mesh_polygon(tshirt_outline(), self.mesh_size)
+        local, self.elements = mesh_polygon(self.outline(), self.mesh_size)
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         self.points = local @ np.array([[c, s], [-s, c]]) + np.asarray(self.centre)
 
@@ -119,3 +134,22 @@ class ShirtSpec:
               radius="0.004" dim="2" mass="{self.mass}" material="cloth">
       {_contact_xml(self.self_collision)}
     </flexcomp>"""
+
+
+@dataclass
+class ShirtSpec(_FlatGarment):
+    """T-shirt; yaw 0 = collar toward +y."""
+
+    def outline(self) -> np.ndarray:
+        return tshirt_outline()
+
+
+@dataclass
+class PantsSpec(_FlatGarment):
+    """Trousers (denim-ish blue, heavier); yaw 0 = waistband toward +y."""
+
+    mass: float = 0.35
+    rgba: tuple = (0.13, 0.25, 0.62, 1.0)
+
+    def outline(self) -> np.ndarray:
+        return pants_outline()

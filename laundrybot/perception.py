@@ -220,10 +220,11 @@ class ClothDetector:
         )
 
 
-# ---------------------------------------------------------------- shirts
+# ---------------------------------------------------------- shirts, pants
 @dataclass
-class ShirtFrame:
-    """Shirt's own axes on the floor: e_v points from hem to collar, e_h to the shirt's right."""
+class GarmentFrame:
+    """A garment's own axes on the floor: e_v points bottom -> top (hem to
+    collar, or leg hems to waistband), e_h to the garment's right."""
 
     centre: np.ndarray
     e_h: np.ndarray
@@ -252,13 +253,19 @@ def _poly(outline: np.ndarray) -> np.ndarray:
     return outline.astype(np.float32).reshape(-1, 1, 2)
 
 
-def shirt_frame(obs: ClothObservation) -> ShirtFrame:
-    """Find a flat T-shirt's orientation from its silhouette alone.
+ShirtFrame = GarmentFrame  # backwards-compatible name
+
+
+def garment_frame(obs: ClothObservation, top: str = "wider") -> GarmentFrame:
+    """Find a flat garment's orientation from its silhouette alone.
 
     1. The two principal axes of the shape (image moments).
     2. The symmetry axis is the one the outline is mirror-symmetric about.
-    3. The collar end is the wider end (that's where the sleeves are).
-    A learned keypoint detector would replace this for real, messy shirts.
+    3. Which end is the top:
+       - top="wider":  the wider end (shirts: that's where the sleeves are)
+       - top="closed": the end where the centre line runs through fabric
+                       (pants: the other end has the gap between the legs)
+    A learned keypoint detector would replace this for real, messy clothes.
     """
     poly = _poly(obs.outline)
     m = cv2.moments(poly)
@@ -277,11 +284,21 @@ def shirt_frame(obs: ClothObservation) -> ShirtFrame:
     v = (obs.outline - c) @ e_v
     h = (obs.outline - c) @ e_h
     span = v.max() - v.min()
-    top_w = np.ptp(h[v > v.max() - 0.3 * span])
-    bottom_w = np.ptp(h[v < v.min() + 0.3 * span])
-    if bottom_w > top_w:
+    if top == "wider":
+        flip = np.ptp(h[v < v.min() + 0.3 * span]) > np.ptp(h[v > v.max() - 0.3 * span])
+    elif top == "closed":
+        inside = lambda t: cv2.pointPolygonTest(poly, tuple(map(float, c + t * e_v)), False) >= 0
+        frac = lambda lo, hi: np.mean([inside(t) for t in np.linspace(lo, hi, 15)])
+        flip = frac(v.min() + 0.02, v.min() + 0.2 * span) > frac(v.max() - 0.2 * span, v.max() - 0.02)
+    else:
+        raise ValueError(top)
+    if flip:
         e_v, e_h = -e_v, -e_h
-    return ShirtFrame(c, e_h, e_v)
+    return GarmentFrame(c, e_h, e_v)
+
+
+def shirt_frame(obs: ClothObservation) -> GarmentFrame:
+    return garment_frame(obs, "wider")
 
 
 def shirt_keypoints(outline: np.ndarray, frame: ShirtFrame) -> ShirtKeypoints:
@@ -295,3 +312,22 @@ def shirt_keypoints(outline: np.ndarray, frame: ShirtFrame) -> ShirtKeypoints:
     band = (v > v.min() + 0.08) & (v < v.min() + 0.2)
     lo, hi = h[band].min(), h[band].max()
     return ShirtKeypoints(sleeve_left, sleeve_right, hem_left, hem_right, float((lo + hi) / 2), float((hi - lo) / 2))
+
+
+@dataclass
+class PantsKeypoints:
+    waist_left: np.ndarray
+    waist_right: np.ndarray
+    hem_left: np.ndarray  # outer corner of each leg's hem
+    hem_right: np.ndarray
+    centre_h: float  # centre line (between the waist corners), garment frame
+
+
+def pants_keypoints(outline: np.ndarray, frame: GarmentFrame) -> PantsKeypoints:
+    hv = frame.to_local(outline)
+    h, v = hv[:, 0], hv[:, 1]
+    pick = lambda score: frame.to_world(hv[np.argmin(score)])[0]
+    wl, wr = pick(h - v), pick(-h - v)  # most top-left / top-right
+    hl, hr = pick(h + v), pick(-h + v)  # most bottom-left / bottom-right
+    centre_h = float(frame.to_local(np.array([wl, wr]))[:, 0].mean())
+    return PantsKeypoints(wl, wr, hl, hr, centre_h)

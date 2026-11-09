@@ -32,6 +32,8 @@ from .perception import (
     Pose2D,
     RobotTracker,
     detect_markers,
+    garment_frame,
+    pants_keypoints,
     shirt_frame,
     shirt_keypoints,
 )
@@ -126,7 +128,8 @@ class Director:
         self.cloth_detector = ClothDetector()
         self.cloth: ClothObservation | None = None
         self.first_cloth: ClothObservation | None = None
-        self.shirt = None  # (ShirtFrame, centre-line h, fold offset L) once a shirt is seen
+        self.frame = None  # GarmentFrame of a shirt / pants, found at first sight
+        self.shirt = None  # (centre-line h, fold offset L) once a shirt is seen
         self.fold_line: tuple[np.ndarray, np.ndarray] | None = None  # for drawing
         self.keypoints: dict[str, np.ndarray] = {}
         self.image: np.ndarray | None = None
@@ -353,13 +356,13 @@ class Director:
             tips = frame.to_local(np.array([k.sleeve_left, k.sleeve_right]))[:, 0] - k.body_centre_h
             L = max(0.5 * k.body_half_width, float(np.max(np.abs(tips))) / 3 + 0.01)
             L = min(L, k.body_half_width - 0.05)
-            self.shirt = (frame, k.body_centre_h, L)
+            self.frame, self.shirt = frame, (k.body_centre_h, L)
             hv = frame.to_local(cloth.outline)
             self.log(
                 f"shirt found: collar points {np.round(frame.e_v, 2)}, body {2*k.body_half_width:.2f} m wide, "
                 f"sleeve span {np.ptp(hv[:, 0]):.2f} m -> fold lines {L:.2f} m either side of centre"
             )
-        frame, hc, L = self.shirt
+        frame, (hc, L) = self.frame, self.shirt
         k = shirt_keypoints(cloth.outline, frame)
         self.keypoints = {"sleeve L": k.sleeve_left, "sleeve R": k.sleeve_right, "hem L": k.hem_left, "hem R": k.hem_right}
         h0 = hc + side * L
@@ -369,16 +372,40 @@ class Director:
         self.fold_line = tuple(frame.to_world(np.array([[h0, v.min() - 0.08], [h0, v.max() + 0.08]])))
         return grabs, [mirror(p) for p in grabs]
 
-    def plan_shirt_half_fold(self, cloth: ClothObservation) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        """Last shirt fold: hem corners up to the collar, across the half-length line."""
-        frame, hc, L = self.shirt
-        k = shirt_keypoints(cloth.outline, frame)
-        v = frame.to_local(cloth.outline)[:, 1]
+    def plan_frame_half_fold(self, cloth: ClothObservation) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Bottom corners up to the top, across the half-length line, in the
+        garment's own frame (shirt: hem to collar; pants: hems to waist)."""
+        frame = self.frame
+        hv = frame.to_local(cloth.outline)
+        h, v = hv[:, 0], hv[:, 1]
         v0 = (v.min() + v.max()) / 2
-        grabs = [k.hem_left, k.hem_right]
-        self.keypoints = {"hem L": k.hem_left, "hem R": k.hem_right}
-        self.fold_line = tuple(frame.to_world(np.array([[hc - L - 0.08, v0], [hc + L + 0.08, v0]])))
+        bl = frame.to_world(hv[np.argmin(h + v)])[0]  # most bottom-left / bottom-right
+        br = frame.to_world(hv[np.argmin(-h + v)])[0]
+        grabs = [bl, br]
+        self.keypoints = {"bottom L": bl, "bottom R": br}
+        self.fold_line = tuple(frame.to_world(np.array([[h.min() - 0.08, v0], [h.max() + 0.08, v0]])))
         return grabs, [p + 2 * (v0 - frame.to_local(p)[0, 1]) * frame.e_v for p in grabs]
+
+    plan_shirt_half_fold = plan_frame_half_fold
+
+    def plan_pants_leg_fold(self, cloth: ClothObservation) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Pants fold 1: lay the left leg on the right one, folding along the
+        centre line. Grab the left waist corner and the left leg's outer hem."""
+        if self.frame is None:
+            self.frame = garment_frame(cloth, top="closed")
+            hv = self.frame.to_local(cloth.outline)
+            self.log(
+                f"pants found: waist points {np.round(self.frame.e_v, 2)}, "
+                f"{np.ptp(hv[:, 1]):.2f} m long, {np.ptp(hv[:, 0]):.2f} m wide"
+            )
+        frame = self.frame
+        k = pants_keypoints(cloth.outline, frame)
+        self.keypoints = {"waist L": k.waist_left, "waist R": k.waist_right, "hem L": k.hem_left, "hem R": k.hem_right}
+        h0 = k.centre_h
+        grabs = [k.waist_left, k.hem_left]
+        v = frame.to_local(cloth.outline)[:, 1]
+        self.fold_line = tuple(frame.to_world(np.array([[h0, v.min() - 0.08], [h0, v.max() + 0.08]])))
+        return grabs, [p + 2 * (h0 - frame.to_local(p)[0, 0]) * frame.e_h for p in grabs]
 
     def _clearance(self, pts: np.ndarray) -> float:
         """Smallest distance from any of pts to the cloth (negative = on top of it)."""
@@ -522,5 +549,13 @@ class Director:
         yield from self._start()
         yield from self.execute_fold("fold 1/3 left side + sleeve", lambda c: self.plan_shirt_side_fold(c, -1))
         yield from self.execute_fold("fold 2/3 right side + sleeve", lambda c: self.plan_shirt_side_fold(c, +1))
-        yield from self.execute_fold("fold 3/3 hem to collar", self.plan_shirt_half_fold)
+        yield from self.execute_fold("fold 3/3 hem to collar", self.plan_frame_half_fold)
+        return (yield from self._finish())
+
+    def fold_pants(self) -> Task:
+        """Leg over leg, then hems to waist, then in half again."""
+        yield from self._start()
+        yield from self.execute_fold("fold 1/3 leg over leg", self.plan_pants_leg_fold)
+        yield from self.execute_fold("fold 2/3 hems to waist", self.plan_frame_half_fold)
+        yield from self.execute_fold("fold 3/3 in half again", self.plan_frame_half_fold)
         return (yield from self._finish())
