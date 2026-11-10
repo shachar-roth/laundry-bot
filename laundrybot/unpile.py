@@ -27,8 +27,8 @@ class Unpiler(Director):
     DRAG_SPEED = 0.15
     DRAG_PAST = 0.30  # pull the grasped point this far past the spot centre
     SPREAD_LIFT = 0.32
-    TENSION_N = 1.5  # stop backing away when the sideways pull rises this much above its start
-    PULL_MAX = 0.45  # ... or after this far
+    TENSION_N = 0.8  # taut when the anchor robot's sideways pull rises this much
+    PULL_MAX = 0.6  # ... or after this far
     PULL_SPEED = 0.05
     SWEEP = 0.35  # sideways sweep while laying the item down
     MAX_SPREADS = 4
@@ -178,34 +178,35 @@ class Unpiler(Director):
             return False
         yield from parallel(*(self.move_arm(r, r.tip[0], self.SPREAD_LIFT, speed=0.2) for r in robots))
 
-        # back away until the fabric between the grippers is taut
-        for r in robots:
-            r.status = "pulling taut"
-        starts = [self.pose(r).xy.copy() for r in robots]
-        outward = [-self.pose(r).heading for r in robots]
-        done, peak = [False, False], [0.0, 0.0]
+        # Pull it taut. One robot holds still (the anchor) while the other backs
+        # away. Dragging cloth over the floor is felt only by the robot that
+        # moves; the anchor feels a pull only once the fabric between the two
+        # grippers is actually tight - that's the signal to stop.
+        room = [0.0, 0.0]
+        for i, r in enumerate(robots):
+            p, out = self.pose(r).xy, -self.pose(r).heading
+            room[i] = max((d for d in np.linspace(0, self.PULL_MAX, 19) if self.in_bounds(p + out * d, 0.05)), default=0.0)
+        puller = int(np.argmax(room))
+        anchor = 1 - puller
+        robots[puller].status, robots[anchor].status = "pulling taut", "anchoring"
+        start = self.pose(robots[puller]).xy.copy()
+        outward = -self.pose(robots[puller]).heading
         yield from self.wait(0.5)  # let the lifted cloth stop swinging
-        base = [np.linalg.norm(r.driver.gripper_force()[:2]) for r in robots]  # its own weight
-        for _ in range(int(self.PULL_MAX / self.PULL_SPEED / CTRL_DT) + 20):
-            for i, r in enumerate(robots):
-                if done[i]:
-                    self.stop(r)
-                    continue
-                f = np.linalg.norm(r.driver.gripper_force()[:2]) - base[i]
-                peak[i] = max(peak[i], f)
-                moved = np.linalg.norm(self.pose(r).xy - starts[i])
-                if f > self.TENSION_N or moved > self.PULL_MAX or not self.in_bounds(self.pose(r).xy + outward[i] * 0.05, 0.05):
-                    done[i] = True
-                    self.stop(r)
-                    continue
-                self._send_world_velocity(r, outward[i] * self.PULL_SPEED, 0.0)
-            if all(done):
+        base = np.linalg.norm(robots[anchor].driver.gripper_force()[:2])
+        rise = 0.0
+        for _ in range(int(room[puller] / self.PULL_SPEED / CTRL_DT) + 10):
+            rise = np.linalg.norm(robots[anchor].driver.gripper_force()[:2]) - base
+            if rise > self.TENSION_N or np.linalg.norm(self.pose(robots[puller]).xy - start) >= room[puller]:
                 break
+            self._send_world_velocity(robots[puller], outward * self.PULL_SPEED, 0.0)
+            self.stop(robots[anchor])
             yield
-        moved = [np.linalg.norm(self.pose(r).xy - p) for r, p in zip(robots, starts)]
+        for r in robots:
+            self.stop(r)
+        moved = np.linalg.norm(self.pose(robots[puller]).xy - start)
         self.log(
-            f"{name}: pulled taut - backed {moved[0]:.2f} / {moved[1]:.2f} m, "
-            f"extra pull {peak[0]:.1f} / {peak[1]:.1f} N (own weight {base[0]:.1f} / {base[1]:.1f} N)"
+            f"{name}: {robots[puller].driver.name} backed {moved:.2f} m until "
+            f"{'the anchor felt +%.1f N' % rise if rise > self.TENSION_N else 'out of room'}"
         )
 
         # sweep sideways while lowering: the hanging part lies down flat
@@ -233,16 +234,20 @@ class Unpiler(Director):
         views = yield from self.observe_items()
         best = views[name].area
         self.history[name].append(best)
-        for i in range(self.MAX_SPREADS):
+        misses = 0
+        for i in range(self.MAX_SPREADS + 2):
             self.phase = f"{name}: spreading it flat ({i + 1})"
             ok = yield from self.spread_once(name)
             views = yield from self.observe_items()
             area = views[name].area if name in views else 0.0
             self.history[name].append(area)
             self.log(f"{name}: visible area {best:.3f} -> {area:.3f} m^2")
-            if not ok and i > 0:
-                break
-            if area < best * 1.05:
+            if not ok:  # missed a grasp or no room: look again and retry, a couple of times
+                misses += 1
+                if misses > 2:
+                    break
+                continue
+            if area < best * 1.05 or i + 1 - misses >= self.MAX_SPREADS:
                 break
             best = area
 
