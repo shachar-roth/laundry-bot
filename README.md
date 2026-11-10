@@ -88,6 +88,53 @@ between the legs). Fold 1 grabs the left waist corner and left outer hem and
 mirrors them across the centre line; folds 2 and 3 grab the two bottom
 corners and lay them on the top edge.
 
+### A pile of three garments (unpiling)
+
+```bash
+python scripts/run_unpile_demo.py --seed 0     # ~12 min, writes output/unpile_demo.mp4
+```
+
+A towel, a shirt and pants are dropped onto a crumpled pile (an invisible
+"hand" lifts each by a random point and lets go). The robots then, for each
+item, most-visible (= probably top-most) first:
+
+1. **Drag it out**: grab its visible edge nearest a free spot, lift a little,
+   reverse to that spot. Works every time so far.
+2. **Spread it**: grab two far-apart points, lift, one robot holds still while
+   the other backs away until the still one *feels* the pull (that means the
+   fabric between them is tight - dragging over the floor isn't felt by the
+   still robot), then sweep sideways while lowering, let go; repeat while the
+   flat area keeps growing.
+
+Result (seed 0), fraction of each garment's fully-flat area it covers:
+
+| | in the pile | after |
+|---|---|---|
+| towel | 24% | 35% |
+| shirt | 40% | 29% |
+| pants | 34% | 53% |
+
+Separating works; **flattening is weak**. Grabbing the two farthest-apart
+points of a crumpled shirt (a sleeve and the opposite hem corner) twists it
+into a rope. Spreading well needs to grab two *neighbouring corners of one
+edge* - i.e. knowing what the item is and where its corners are, even while
+it's crumpled. That is the next problem.
+
+New realism the pile needed:
+
+- **Touch**: the fingertip lowers until it touches fabric, then pinches only
+  the top layer. **Tension**: the gripper reports how hard the cloth pulls
+  (real servos report their load).
+- **Marker on a mast**: a 90° lens sees robots near the edge from the side, so
+  their raised arm would hide a marker on the base. The work area is fitted to
+  what the camera sees at mast height.
+- **Simplification**: garments don't collide with each other or themselves
+  (that costs ~500 s of CPU per simulated second here). Each rests at its own
+  height by drop order, so the camera still sees who is on top - but dragging
+  one item never disturbs the others. Real garment-on-garment contact needs a
+  GPU simulator. Items are told apart by colour (stand-in for a learned
+  instance-segmentation model).
+
 ### Staying in view
 
 The floor markers also mark out the robots' work area: robots never plan to
