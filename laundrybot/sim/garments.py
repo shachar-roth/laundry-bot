@@ -12,10 +12,13 @@ import cv2
 import numpy as np
 
 
-def _contact_xml(self_collision: bool) -> str:
+def _contact_xml(self_collision: bool, cloth_contacts: bool = True) -> str:
+    # contype 1 hits the floor; conaffinity bit 2 lets robot chassis push the
+    # cloth; bit 1 lets other garments collide with it (expensive with many).
+    aff = 3 if cloth_contacts else 2
     return (
         f'<contact condim="3" solref="0.01 1" selfcollide="{"auto" if self_collision else "none"}" '
-        f'contype="1" conaffinity="3" friction="0.8"/>\n      <edge equality="true" damping="0.002"/>'
+        f'contype="1" conaffinity="{aff}" friction="0.8"/>\n      <edge equality="true" damping="0.002"/>'
     )
 
 
@@ -30,16 +33,18 @@ class TowelSpec:
     rgba: tuple = (0.15, 0.35, 0.85, 1.0)
     # Layers rest on each other instead of passing through. ~5x slower physics.
     self_collision: bool = True
+    radius: float = 0.004  # cloth half-thickness for collisions
+    cloth_contacts: bool = True  # collide with other garments
 
     @property
     def n_vertices(self) -> int:
         return self.count_x * self.count_y
 
-    def flexcomp_xml(self) -> str:
-        return f"""<flexcomp name="cloth" type="grid" count="{self.count_x} {self.count_y} 1"
+    def flexcomp_xml(self, name: str = "cloth", material: str = "cloth") -> str:
+        return f"""<flexcomp name="{name}" type="grid" count="{self.count_x} {self.count_y} 1"
               spacing="{self.spacing} {self.spacing} {self.spacing}" pos="{self.centre[0]:.4f} {self.centre[1]:.4f} 0.006"
-              euler="0 0 {self.yaw:.5f}" radius="0.004" dim="2" mass="{self.mass}" material="cloth">
-      {_contact_xml(self.self_collision)}
+              euler="0 0 {self.yaw:.5f}" radius="{self.radius}" dim="2" mass="{self.mass}" material="{material}">
+      {_contact_xml(self.self_collision, self.cloth_contacts)}
     </flexcomp>"""
 
 
@@ -114,6 +119,8 @@ class _FlatGarment:
     mass: float = 0.18
     rgba: tuple = (0.12, 0.3, 0.8, 1.0)
     self_collision: bool = True
+    radius: float = 0.004
+    cloth_contacts: bool = True
 
     def outline(self) -> np.ndarray:
         raise NotImplementedError
@@ -127,12 +134,12 @@ class _FlatGarment:
     def n_vertices(self) -> int:
         return len(self.points)
 
-    def flexcomp_xml(self) -> str:
+    def flexcomp_xml(self, name: str = "cloth", material: str = "cloth") -> str:
         pts = " ".join(f"{x:.4f} {y:.4f} 0.006" for x, y in self.points)
         els = " ".join(str(i) for i in self.elements.ravel())
-        return f"""<flexcomp name="cloth" type="direct" point="{pts}" element="{els}"
-              radius="0.004" dim="2" mass="{self.mass}" material="cloth">
-      {_contact_xml(self.self_collision)}
+        return f"""<flexcomp name="{name}" type="direct" point="{pts}" element="{els}"
+              radius="{self.radius}" dim="2" mass="{self.mass}" material="{material}">
+      {_contact_xml(self.self_collision, self.cloth_contacts)}
     </flexcomp>"""
 
 

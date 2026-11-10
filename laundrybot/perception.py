@@ -161,6 +161,10 @@ class ClothObservation:
     half_short: float
     pixel_corners: np.ndarray  # 4x2 px (for drawing)
     pixel_outline: np.ndarray
+    # Multi-piece view (an item partly hidden in a pile shows as several pieces)
+    pieces: int = 1
+    piece_outlines: list | None = None  # world Nx2 per visible piece
+    inner_points: np.ndarray | None = None  # world points >= 2 cm inside visible fabric (grasp candidates)
 
 
 class ClothDetector:
@@ -180,14 +184,24 @@ class ClothDetector:
         k = np.ones((5, 5), np.uint8)
         return cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
 
-    def detect(self, rgb: np.ndarray, cam: CameraModel, cloth_z: float = 0.006) -> ClothObservation | None:
+    def detect(self, rgb: np.ndarray, cam: CameraModel, cloth_z: float = 0.006, merge: bool = False) -> ClothObservation | None:
+        """Find the item. merge=True treats all visible pieces as one item (its
+        outline is then the convex hull of every piece) - for items partly
+        hidden under others in a pile."""
         m = self.mask(rgb)
         contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         if not contours:
             return None
-        cnt = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(cnt) < self.min_area_px:
-            return None
+        if merge:
+            contours = [c for c in contours if cv2.contourArea(c) >= self.min_area_px / 5]
+            if not contours or sum(cv2.contourArea(c) for c in contours) < self.min_area_px:
+                return None
+            cnt = cv2.convexHull(np.concatenate(contours))
+        else:
+            cnt = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(cnt) < self.min_area_px:
+                return None
+            contours = [cnt]
         pix_outline = cnt.reshape(-1, 2).astype(float)
         # Approximate rectangle, then snap each rectangle corner to the nearest
         # real outline point so we target actual cloth, not empty floor.
@@ -196,7 +210,16 @@ class ClothDetector:
 
         outline = cam.pixel_to_world(pix_outline, z=cloth_z)[:, :2]
         corners = cam.pixel_to_world(pix_corners, z=cloth_z)[:, :2]
-        area = 0.5 * abs(np.dot(outline[:, 0], np.roll(outline[:, 1], 1)) - np.dot(outline[:, 1], np.roll(outline[:, 0], 1)))
+        shoelace = lambda o: 0.5 * abs(np.dot(o[:, 0], np.roll(o[:, 1], 1)) - np.dot(o[:, 1], np.roll(o[:, 0], 1)))
+        pieces = [cam.pixel_to_world(c.reshape(-1, 2).astype(float), z=cloth_z)[:, :2] for c in contours]
+        area = sum(shoelace(o) for o in pieces)  # visible fabric only
+        # grasp candidates: pixels at least ~2 cm inside the visible fabric
+        px_per_m = np.linalg.norm(pix_outline.max(axis=0) - pix_outline.min(axis=0)) / max(
+            np.linalg.norm(outline.max(axis=0) - outline.min(axis=0)), 1e-6
+        )
+        inner = cv2.erode(m, np.ones((max(3, int(0.04 * px_per_m)),) * 2, np.uint8))
+        ys, xs = np.nonzero(inner[::3, ::3])
+        inner_points = cam.pixel_to_world(np.column_stack([xs * 3, ys * 3]).astype(float), z=cloth_z)[:, :2] if len(xs) else None
 
         # Rectangle axes in world coordinates, from the minimum-area rectangle
         box_w = cam.pixel_to_world(box, z=cloth_z)[:, :2]
@@ -217,6 +240,9 @@ class ClothDetector:
             half_short=float(np.max(np.abs(pv))),
             pixel_corners=pix_corners,
             pixel_outline=pix_outline,
+            pieces=len(pieces),
+            piece_outlines=pieces,
+            inner_points=inner_points,
         )
 
 

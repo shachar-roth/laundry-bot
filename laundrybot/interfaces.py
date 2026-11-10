@@ -39,7 +39,22 @@ class RobotDriver(Protocol):
         """Target angles for the 3 pitch joints; servos move there at their own speed."""
         ...
 
-    def set_gripper(self, closed: bool) -> None: ...
+    def set_gripper(self, closed: bool, depth: float | None = None) -> None:
+        """Close/open. With depth=None the fingers close at their current height
+        and take everything between them (e.g. a stack of folded layers). With a
+        depth, they take only the fabric within `depth` metres below the first
+        surface they touched (the top layer of a pile)."""
+        ...
+
+    def touching(self) -> bool:
+        """Fingertip is resting on fabric (real grippers: a contact switch, or
+        the arm servos' load rising as the arm is lowered)."""
+        ...
+
+    def gripper_force(self) -> np.ndarray:
+        """Force the held cloth pulls on the fingertip, world frame, newtons
+        (real arms: estimated from the servos' reported load)."""
+        ...
 
     def holding(self) -> bool:
         """True if the gripper closed on something (real grippers sense this

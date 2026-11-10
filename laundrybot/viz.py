@@ -22,7 +22,15 @@ def draw_overlay(director: Director, image: np.ndarray) -> np.ndarray:
     if not cam.calibrated:
         _text(img, "calibrating...", (20, 40))
         return img
-    if director.cloth is not None:
+    views = getattr(director, "views", None)
+    if views:  # several items: outline every visible piece, label each item
+        for name, v in views.items():
+            focus = director.cloth is v
+            for piece in v.piece_outlines or [v.outline]:
+                cv2.polylines(img, [cam.world_to_pixel(piece).astype(np.int32)], True, GREEN if focus else WHITE, 3 if focus else 2, cv2.LINE_AA)
+            c = cam.world_to_pixel(np.atleast_2d(v.centre))[0].astype(int)
+            _text(img, f"{name} {v.area:.2f} m2", (c[0] - 60, c[1]), 0.8, GREEN if focus else WHITE)
+    elif director.cloth is not None:
         c = director.cloth
         pts = cam.world_to_pixel(c.outline).astype(np.int32)
         cv2.polylines(img, [pts], True, GREEN, 2, cv2.LINE_AA)

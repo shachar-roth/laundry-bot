@@ -133,7 +133,8 @@ class Director:
         self.robots = [RobotState(r, np.array(self.HOME_TIP, float)) for r in robots]
         self.tracker = RobotTracker(self.cam, geometry, [r.id for r in self.robots])
         self.cloth_detector = ClothDetector()
-        self.cloth: ClothObservation | None = None
+        self.cloth: ClothObservation | None = None  # the item being worked on
+        self.others: list[ClothObservation] = []  # other items on the floor (obstacles)
         self.first_cloth: ClothObservation | None = None
         self.frame = None  # GarmentFrame of a shirt / pants, found at first sight
         self.shirt = None  # (centre-line h, fold offset L) once a shirt is seen
@@ -160,6 +161,7 @@ class Director:
         if not self.cam.calibrated:
             if self.cam.calibrate(self.detections, self.floor_markers):
                 self.log(f"camera calibrated from floor markers (reprojection error {self.cam.reprojection_error_px:.2f} px)")
+                self._fit_bounds_to_view()
             else:
                 return
         self.tracker.update(self.detections, t)
@@ -191,6 +193,17 @@ class Director:
         yield from self.wait(0.3)  # let the servos catch up
 
     # ------------------------------------------------------------------ base
+    def _fit_bounds_to_view(self, margin: float = 0.25) -> None:
+        """Shrink the work area to what the camera sees at the height of the
+        robots' markers (a raised marker leaves the view sooner)."""
+        W, H = self.cam.K[0, 2] * 2, self.cam.K[1, 2] * 2
+        corners = self.cam.pixel_to_world(np.array([[0, 0], [W, 0], [W, H], [0, H]], float), z=self.g.marker_z)[:, :2]
+        lo = np.maximum(self.bounds[0], corners.min(axis=0) + margin)
+        hi = np.minimum(self.bounds[1], corners.max(axis=0) - margin)
+        if not np.allclose(lo, self.bounds[0]) or not np.allclose(hi, self.bounds[1]):
+            self.log(f"work area limited to the camera's view: x {lo[0]:.2f}..{hi[0]:.2f}, y {lo[1]:.2f}..{hi[1]:.2f} m")
+        self.bounds = (lo, hi)
+
     def in_bounds(self, xy: np.ndarray, margin: float = 0.0) -> bool:
         """Is xy inside the work area marked out by the floor markers?"""
         (x0, y0), (x1, y1) = self.bounds
@@ -222,7 +235,8 @@ class Director:
             rs.status = "found"
 
     def drive_to(
-        self, rs: RobotState, goal: Pose2D, avoid_cloth: bool = True, avoid_robots=(), pos_tol=0.008, yaw_tol=0.02, timeout=40.0
+        self, rs: RobotState, goal: Pose2D, avoid_cloth: bool = True, avoid_robots=(), pos_tol=0.008, yaw_tol=0.02, timeout=40.0,
+        v_max: float | None = None,
     ) -> Task:
         """Closed-loop drive to a pose, going around the cloth (and any robots
         in avoid_robots) if needed."""
@@ -230,6 +244,7 @@ class Director:
         start = self.pose(rs).xy
         path = self.plan_path(start, goal.xy, avoid_robots) if avoid_cloth else [goal.xy]
         rs.path = [start] + path
+        vmax = v_max or self.V_MAX
         t0 = self.t
         settled = 0
         for k, wp in enumerate(path):
@@ -255,10 +270,10 @@ class Director:
                 elif dist < 0.06:
                     break
                 else:
-                    v = e / dist * self.V_MAX
+                    v = e / dist * vmax
                 n = np.linalg.norm(v)
-                if n > self.V_MAX:
-                    v *= self.V_MAX / n
+                if n > vmax:
+                    v *= vmax / n
                 self._send_world_velocity(rs, v, float(np.clip(self.KP_YAW * yaw_err, -self.W_MAX, self.W_MAX)))
                 yield
         self.stop(rs)
@@ -284,9 +299,15 @@ class Director:
         self.stop(rs)
 
     # ---------------------------------------------------------- path planning
-    def _cloth_box(self, margin: float):
-        c = self.cloth
+    def _all_cloths(self) -> list[ClothObservation]:
+        return ([self.cloth] if self.cloth is not None else []) + list(self.others)
+
+    @staticmethod
+    def _box_of(c: ClothObservation, margin: float):
         return c.centre, c.u, c.v, c.half_long + margin, c.half_short + margin
+
+    def _cloth_box(self, margin: float):
+        return self._box_of(self.cloth, margin)
 
     def _robot_box(self, other: RobotState, margin: float):
         """Keep-out square around another robot (its size + ours + margin)."""
@@ -310,7 +331,7 @@ class Director:
         for a few obstacles; a home with furniture needs a real planner.
         """
         margin = self.g.footprint_radius + 0.05
-        boxes = ([self._cloth_box(margin)] if self.cloth is not None else []) + [self._robot_box(r, 0.04) for r in avoid]
+        boxes = [self._box_of(c, margin) for c in self._all_cloths()] + [self._robot_box(r, 0.04) for r in avoid]
         boxes = [b for b in boxes if not self._inside(goal, b)]  # never let an obstacle hide the goal
         if not boxes:
             return [goal]
@@ -479,10 +500,13 @@ class Director:
         self.fold_line = tuple(frame.to_world(np.array([[h0, v.min() - 0.08], [h0, v.max() + 0.08]])))
         return grabs, [p + 2 * (h0 - frame.to_local(p)[0, 0]) * frame.e_h for p in grabs]
 
-    def _clearance(self, pts: np.ndarray) -> float:
-        """Smallest distance from any of pts to the cloth (negative = on top of it)."""
-        poly = self.cloth.outline.astype(np.float32).reshape(-1, 1, 2)
-        return min(-cv2.pointPolygonTest(poly, (float(x), float(y)), True) for x, y in pts)
+    def _clearance(self, pts: np.ndarray, cloths: list[ClothObservation] | None = None) -> float:
+        """Smallest distance from any of pts to any cloth (negative = on top of it)."""
+        best = math.inf
+        for c in self._all_cloths() if cloths is None else cloths:
+            poly = c.outline.astype(np.float32).reshape(-1, 1, 2)
+            best = min(best, min(-cv2.pointPolygonTest(poly, (float(x), float(y)), True) for x, y in pts))
+        return best
 
     def plan_fold(self, grabs: list[np.ndarray], places: list[np.ndarray]) -> list[FoldAssignment]:
         """Decide where each robot stands and which robot takes which point.
@@ -529,9 +553,14 @@ class Director:
         return [FoldAssignment(r, *leg) for r, leg in zip(best, legs)]
 
     # ---------------------------------------------------------- manipulation
-    def pick(self, rs: RobotState, corner: np.ndarray, inset: float = 0.015) -> Task:
+    PILE_HOVER_Z = 0.22
+
+    def pick(self, rs: RobotState, corner: np.ndarray, inset: float = 0.015, touch: bool = False) -> Task:
         """Grasp near a corner. We aim `inset` metres inside the cloth: aiming at
-        the exact edge risks closing on bare floor."""
+        the exact edge risks closing on bare floor.
+
+        touch=True (for piles): lower slowly until the fingertip touches fabric,
+        then pinch only the top layer."""
         if self.cloth is not None and inset > 0:
             inward = self.cloth.centre - corner
             corner = corner + inward / np.linalg.norm(inward) * inset
@@ -539,13 +568,25 @@ class Director:
         yield from self.face_point(rs, corner)
         r = float(np.linalg.norm(corner - self.pose(rs).xy))
         rs.status = "reaching"
-        yield from self.move_arm(rs, r, self.HOVER_Z)
-        yield from self.move_arm(rs, r, self.GRASP_Z, speed=0.1)
-        rs.driver.set_gripper(True)
+        if touch:
+            yield from self.move_arm(rs, r, self.PILE_HOVER_Z)
+            z = self.PILE_HOVER_Z
+            while z > self.GRASP_Z and not rs.driver.touching():
+                z = max(self.GRASP_Z, z - 0.006)
+                self.set_tip(rs, r, z)
+                yield
+            yield from self.wait(0.2)
+            rs.driver.set_gripper(True, depth=0.012)
+        else:
+            yield from self.move_arm(rs, r, self.HOVER_Z)
+            yield from self.move_arm(rs, r, self.GRASP_Z, speed=0.1)
+            rs.driver.set_gripper(True)
         yield from self.wait(0.3)
         yield from self.move_arm(rs, r, self.HOLD_Z, speed=0.15)
         ok = rs.driver.holding()
         rs.status = "holding" if ok else "missed"
+        if not ok:
+            self.log(f"{rs.driver.name}: grasp missed at {np.round(corner, 3)} (fingertip closed at height {rs.tip[1]:.3f} m)")
         return ok
 
     def release_and_back_off(self, rs: RobotState, back: float = 0.15) -> Task:

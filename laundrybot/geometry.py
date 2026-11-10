@@ -31,6 +31,9 @@ class RobotGeometry:
     # ArUco marker on the base's top plate, at the rear (away from the arm)
     marker_size: float = 0.11  # outer black square, metres
     marker_offset_x: float = -0.075  # marker centre, in robot frame
+    # Raise the marker on a mast above everything the arm (and lifted cloth)
+    # can reach, so a camera looking from the side can never see it covered.
+    marker_mast: float = 0.0
 
     # Arm
     mount_x: float = 0.14  # shoulder position, robot frame
@@ -41,7 +44,7 @@ class RobotGeometry:
 
     @property
     def marker_z(self) -> float:
-        return self.base_height + 0.002
+        return self.base_height + 0.002 + self.marker_mast
 
     @property
     def footprint_radius(self) -> float:
