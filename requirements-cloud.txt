@@ -1,0 +1,4 @@
+# Extra packages for the GPU machines (on top of requirements.txt)
+warp-lang==1.19.0
+newton==1.8.0
+huggingface_hub>=0.30

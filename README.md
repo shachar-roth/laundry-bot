@@ -26,6 +26,27 @@ python -m pytest tests
 On a headless Linux machine you need an OpenGL backend, e.g.
 `sudo apt install libosmesa6` (MuJoCo then renders with `MUJOCO_GL=osmesa`, the default here).
 
+## Running on rented GPUs (RunPod)
+
+```bash
+python scripts/cloud/runpod_launch.py run gpu_check            # cheap GPU, checks everything works
+python scripts/cloud/runpod_launch.py run <job> --gpus batch   # RTX 5090 / 4090 class
+python scripts/cloud/runpod_launch.py status                   # list our machines
+python scripts/cloud/runpod_launch.py cleanup                  # delete all our machines
+```
+
+- **Image** (`docker/sim.Dockerfile`): software only (CUDA 12.8, MuJoCo, Newton,
+  Warp...), built by GitHub Actions into `ghcr.io/shachar-roth/laundry-bot-sim`.
+  Each run downloads the code at your current (pushed) commit.
+- **Jobs** are scripts in `scripts/cloud/jobs/`; results go to the private
+  Hugging Face dataset `Shachar-roth/laundry-bot-runs` under `runs/<run id>/`
+  and are downloaded to `output/cloud/<run id>/`.
+- **Machines never outlive their job:** the launcher always deletes the
+  machine (success, failure, timeout, Ctrl-C), the machine tries to delete
+  itself when done, and every launch first deletes leftovers.
+- **Secrets** live in RunPod's settings, never in the code: `github_token`
+  (read this repository) and `hf_runs_token` (write the results dataset).
+
 ## How it is organised
 
 ```
