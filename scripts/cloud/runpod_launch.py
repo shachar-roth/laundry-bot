@@ -19,7 +19,7 @@ Keys: RunPod and Hugging Face keys are injected by this session's network
 proxy, so no key is ever in a file or variable here. Elsewhere, set
 RUNPOD_API_KEY and HF_TOKEN. On RunPod, the machines read two secrets you
 create in RunPod's settings: `github_token` (read this repo) and
-`hf_runs_token` (write the results dataset).
+`laundry-bot-runs-token` (write the results dataset).
 """
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ def run(args) -> int:
             "HF_REPO": HF_REPO,
             # RunPod fills these in from the secrets you saved in its settings
             "GITHUB_TOKEN": "{{ RUNPOD_SECRET_github_token }}",
-            "HF_TOKEN": "{{ RUNPOD_SECRET_hf_runs_token }}",
+            "HF_TOKEN": "{{ RUNPOD_SECRET_laundry-bot-runs-token }}",
         },
     }
     if args.registry_auth:

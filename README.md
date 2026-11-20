@@ -45,7 +45,7 @@ python scripts/cloud/runpod_launch.py cleanup                  # delete all our 
   machine (success, failure, timeout, Ctrl-C), the machine tries to delete
   itself when done, and every launch first deletes leftovers.
 - **Secrets** live in RunPod's settings, never in the code: `github_token`
-  (read this repository) and `hf_runs_token` (write the results dataset).
+  (read this repository) and `laundry-bot-runs-token` (write the results dataset).
 
 ## How it is organised
 
